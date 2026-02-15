@@ -52,20 +52,27 @@ struct FlowScreen: View {
     }
 
     private var arPlaceholder: some View {
-        RoundedRectangle(cornerRadius: 16)
-            .strokeBorder(style: StrokeStyle(lineWidth: 2, dash: [6]))
-            .frame(height: 170)
+        RoundedRectangle(cornerRadius: 20)
+            .stroke(style: StrokeStyle(lineWidth: 2, dash: [8]))
+            .foregroundStyle(.gray.opacity(0.6))
+            .frame(height: 180)
             .overlay(
-                VStack(spacing: 6) {
-                    Text("AR Area (Day 2)")
+                VStack(spacing: 8) {
+                    Image(systemName: "camera.viewfinder")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.secondary)
+
+                    Text("AR Alignment Area")
                         .font(.headline)
-                    Text("Camera-aligned overlays will appear here.")
-                        .font(.subheadline)
+
+                    Text("Camera overlays will appear here in AR mode.")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                .padding()
+                .multilineTextAlignment(.center)
             )
     }
+
 
     private var stepCard: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -111,20 +118,23 @@ struct FlowScreen: View {
     }
 
     private var choiceButtons: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 12) {
             ForEach(engine.currentStep.choices) { choice in
                 Button(choice.title) {
                     engine.select(choice)
                 }
                 .buttonStyle(.borderedProminent)
+                .controlSize(.large)
                 .frame(maxWidth: .infinity)
             }
 
-            Button("Back") { engine.goBack() }
-                .buttonStyle(.bordered)
-                .disabled(!engine.canGoBack)
+            if engine.canGoBack {
+                Button("Back") { engine.goBack() }
+                    .buttonStyle(.bordered)
+            }
         }
     }
+
 
     private var sectionsSheet: some View {
         NavigationStack {

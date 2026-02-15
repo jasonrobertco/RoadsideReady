@@ -12,7 +12,12 @@ struct RootView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 12) {
+            VStack(spacing: 16) {
+
+                Text("Roadside Ready")
+                    .font(.largeTitle.bold())
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
                 Picker("Mode", selection: Binding(
                     get: { engine.mode },
                     set: { engine.setMode($0) }
@@ -27,7 +32,8 @@ struct RootView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .padding()
-            .navigationTitle("Roadside Ready")
+            .navigationBarHidden(true)
         }
     }
+
 }

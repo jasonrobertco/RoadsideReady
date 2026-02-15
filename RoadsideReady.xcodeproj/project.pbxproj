@@ -10,9 +10,22 @@
 		118D25752F4127D900528720 /* RoadsideReady.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RoadsideReady.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		118D25952F41CECB00528720 /* Exceptions for "RoadsideReady" folder in "RoadsideReady" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 118D25742F4127D900528720 /* RoadsideReady */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		118D25772F4127D900528720 /* RoadsideReady */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				118D25952F41CECB00528720 /* Exceptions for "RoadsideReady" folder in "RoadsideReady" target */,
+			);
 			path = RoadsideReady;
 			sourceTree = "<group>";
 		};
@@ -250,6 +263,8 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = RoadsideReady/Info.plist;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Roadside Ready uses the camera to align AR overlays for safe flat-tire guidance.\n";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -292,6 +307,8 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = RoadsideReady/Info.plist;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Roadside Ready uses the camera to align AR overlays for safe flat-tire guidance.\n";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
