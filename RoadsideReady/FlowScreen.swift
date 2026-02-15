@@ -7,9 +7,11 @@
 
 import SwiftUI
 
+
 struct FlowScreen: View {
     @ObservedObject var engine: FlowEngine
     @State private var showSections = false
+    @State private var isAligned = false
 
     var body: some View {
         VStack(spacing: 12) {
@@ -52,26 +54,26 @@ struct FlowScreen: View {
     }
 
     private var arPlaceholder: some View {
+
+        #if targetEnvironment(simulator)
         RoundedRectangle(cornerRadius: 20)
             .stroke(style: StrokeStyle(lineWidth: 2, dash: [8]))
             .foregroundStyle(.gray.opacity(0.6))
             .frame(height: 180)
             .overlay(
-                VStack(spacing: 8) {
-                    Image(systemName: "camera.viewfinder")
-                        .font(.system(size: 28))
-                        .foregroundStyle(.secondary)
-
-                    Text("AR Alignment Area")
-                        .font(.headline)
-
-                    Text("Camera overlays will appear here in AR mode.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .multilineTextAlignment(.center)
+                Text("AR not available in Simulator")
+                    .foregroundStyle(.secondary)
             )
+        #else
+        ARViewContainer(
+            currentStepID: engine.currentStep.id,
+            isAligned: $isAligned
+        )
+            .frame(height: 300)
+            .cornerRadius(20)
+        #endif
     }
+
 
 
     private var stepCard: some View {
