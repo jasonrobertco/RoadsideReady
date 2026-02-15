@@ -11,7 +11,7 @@ import SwiftUI
 struct RoadsideReadyApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView() //top level
         }
     }
 }
