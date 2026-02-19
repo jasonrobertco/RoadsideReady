@@ -39,6 +39,20 @@ struct FlowScreen: View {
                 }
             }
         }
+        .safeAreaInset(edge: .bottom) {
+            StepProgressIndicator(
+                steps: engine.stepsInOrder,
+                currentStepID: engine.currentStep.id,
+                mode: engine.mode
+            )
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 16)     // content padding
+            .padding(.vertical, 12)
+            .background(.ultraThinMaterial)
+            .overlay(Divider(), alignment: .top)
+            .ignoresSafeArea(.container, edges: .horizontal) // background reaches screen edges
+        }
+
 
     }
 
