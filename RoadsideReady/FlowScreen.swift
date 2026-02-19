@@ -107,11 +107,17 @@ struct FlowScreen: View {
         HStack(spacing: 10) {
             Button("Back") { engine.goBack() }
                 .buttonStyle(.bordered)
-                .disabled(!engine.canGoBack)
+                .disabled(
+                    !engine.canGoNext ||
+                    (engine.currentStep.id == "ft_align" && !isAligned)
+                )
 
             Spacer()
 
             Button(engine.canGoNext ? "Next" : "Done") {
+                if engine.currentStep.id == "ft_align" && !isAligned {
+                        return
+                    }
                 engine.goNext()
             }
             .buttonStyle(.borderedProminent)

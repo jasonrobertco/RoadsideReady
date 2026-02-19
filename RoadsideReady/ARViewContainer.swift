@@ -52,13 +52,16 @@ struct ARViewContainer: UIViewRepresentable {
         }
 
         @objc func handleTap(_ sender: UITapGestureRecognizer) {
+            print("handleTap fired")
             guard let arView = arView else { return }
 
             let location = sender.location(in: arView)
 
             let results = arView.raycast(from: location,
-                                         allowing: .estimatedPlane,
+                                         allowing: .existingPlaneGeometry,
                                          alignment: .horizontal)
+            print("Tap detected")
+            print("Raycast count:", results.count)
 
             if let first = results.first {
 
@@ -81,6 +84,7 @@ struct ARViewContainer: UIViewRepresentable {
 
                 isAligned = true
             }
+            
         }
         func showLugMarkers() {
             guard let anchor = wheelAnchor else { return }
