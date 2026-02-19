@@ -25,11 +25,8 @@ enum Flows {
 If anything feels unsafe, stop and call for help.
 """,
                 safety: [.traffic, .stopIfUnsure],
-                nextStepID: nil,
-                choices: [
-                    .init(id: "ft_safe_yes", title: "It’s safe to proceed", nextStepID: "ft_tools"),
-                    .init(id: "ft_safe_no", title: "Not safe / unsure", nextStepID: "ft_unsafe_stop")
-                ]
+                nextStepID: "ft_tools",
+                choices: []
             ),
 
             .init(

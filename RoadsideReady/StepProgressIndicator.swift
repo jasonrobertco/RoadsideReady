@@ -17,18 +17,20 @@ struct StepProgressIndicator: View {
     }
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 12) {
             ForEach(steps.indices, id: \.self) { idx in
                 Circle()
                     .fill(dotColor(for: idx))
                     .frame(
-                        width: idx == currentIndex ? 9 : 7,
-                        height: idx == currentIndex ? 9 : 7
+                        width: idx == currentIndex ? 10 : 8,
+                        height: idx == currentIndex ? 10 : 8
                     )
+                    .scaleEffect(idx == currentIndex ? 1.06 : 1.0)
+                    .animation(.spring(response: 0.28, dampingFraction: 0.86), value: currentStepID)
             }
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 10)
+        .padding(.vertical, 14)
     }
 
     private func dotColor(for idx: Int) -> Color {
