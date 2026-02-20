@@ -14,6 +14,7 @@ struct FlowScreen: View {
     @State private var isAligned = false
     @State private var safetyChecks: [Bool] = Array(repeating: false, count: 4)
     @State private var showAR = false
+    @State private var showScan = false
 
     private let progressBarHeight: CGFloat = 56
     
@@ -33,28 +34,40 @@ struct FlowScreen: View {
     var body: some View {
         VStack(spacing: 12) {
             if engine.currentStep.id != "ft_safety" { headerRow }
-            if shouldShowCameraLauncher { cameraLauncher }
-
             stepCard
-
-            if !engine.currentStep.choices.isEmpty {
-                choiceButtons
-            }
+            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
         .safeAreaInset(edge: .bottom) {
-            bottomBar
+            bottomDock
         }
         .sheet(isPresented: $showSections) { sectionsSheet }
         .toolbar {
             if engine.mode == .deadBattery {
-                ToolbarItem(placement: .automatic) { Button("Sections") { showSections = true } }
+                ToolbarItem(placement: .automatic) {
+                    Button("Sections") { showSections = true }
+                }
             }
             if engine.mode == .flatTire {
-                ToolbarItem(placement: .topBarTrailing) { Button { showAR = true } label: { Image(systemName: "camera") } }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { showScan = true } label: {
+                        Image(systemName: "camera")
+                    }
+                    .accessibilityLabel("Open scan")
+                }
             }
+        }
+        .fullScreenCover(isPresented: $showScan) {
+            ScanPlaceholderView()
         }
         .fullScreenCover(isPresented: $showAR) {
             ARFullScreenView(currentStepID: engine.currentStep.id, isAligned: $isAligned)
+        }
+        .onChange(of: engine.currentStep.id) { _, newID in
+            if newID == "ft_safety" { safetyChecks = Array(repeating: false, count: 4) }
+            if newID != "ft_align" { isAligned = false }
         }
     }
     
@@ -100,6 +113,35 @@ struct FlowScreen: View {
         .background(.ultraThinMaterial)
         .overlay(Divider(), alignment: .top)
         .ignoresSafeArea(.container, edges: .horizontal)
+    }
+
+    private var bottomDock: some View {
+        VStack(spacing: 10) {
+            bottomActions
+
+            StepProgressIndicator(
+                steps: engine.stepsInOrder,
+                currentStepID: engine.currentStep.id,
+                mode: engine.mode
+            )
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 12)
+        .frame(maxWidth: .infinity)
+        .background(.ultraThinMaterial)
+        .overlay(Divider(), alignment: .top)
+    }
+    
+    @ViewBuilder
+    private var bottomActions: some View {
+        if engine.currentStep.id == "ft_safety" {
+            safetyProceedButton
+        } else if !engine.currentStep.choices.isEmpty {
+            choiceButtons
+        } else {
+            navButtons
+        }
     }
 
     private var heroHeader: some View {
@@ -198,6 +240,42 @@ struct FlowScreen: View {
         .buttonStyle(.plain)
     }
 
+    // MARK: - Hero (centered) + Scan pill (top-right)
+    private var safetyHeroCard: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(Color(uiColor: .secondarySystemBackground))
+                .frame(height: 170)
+
+            VStack(spacing: 10) {
+                Text("Flat Tire")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+
+                // Placeholder hero icon (replace later with your tire illustration)
+                Circle()
+                    .fill(Color.primary.opacity(0.06))
+                    .overlay(
+                        Circle().stroke(Color.primary.opacity(0.10), lineWidth: 1)
+                    )
+                    .frame(width: 92, height: 92)
+                    .overlay(
+                        Image(systemName: "exclamationmark")
+                            .font(.system(size: 30, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    )
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        }
+        .overlay {
+            ScanBoxButton {
+                showAR = true
+            }
+            .frame(maxWidth: 420)
+            .padding(24)
+        }
+    }
+
 
     private var headerRow: some View {
         HStack {
@@ -222,40 +300,27 @@ struct FlowScreen: View {
 
             // Safety step: simplified checklist layout
             if engine.currentStep.id == "ft_safety" {
+                VStack(alignment: .leading, spacing: 12) {
 
-                VStack(alignment: .leading, spacing: 10) {
-                    // Compact title + subtitle
+                    safetyHeroCard
+
+                    SafetyAdvisoryCard(text: "If you’re in danger, call local emergency services.")
+
                     Text("Safety check")
-                        .font(.title2.weight(.bold))
+                        .font(.title3.weight(.semibold))
+
                     Text("Tap each item to confirm.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
 
-                    // Checklist card with reduced padding and fewer dividers
                     VStack(spacing: 0) {
-                        ChecklistRow(
-                            title: "Hazard lights on",
-                            subtitle: "Stay visible",
-                            isChecked: $safetyChecks[0]
-                        )
+                        ChecklistRow(title: "Hazard lights on", subtitle: "Stay visible", isChecked: $safetyChecks[0])
                         Divider().opacity(0.5)
-                        ChecklistRow(
-                            title: "Pulled over safely",
-                            subtitle: "Flat, well-lit spot",
-                            isChecked: $safetyChecks[1]
-                        )
+                        ChecklistRow(title: "Pulled over safely", subtitle: "Flat, well-lit spot", isChecked: $safetyChecks[1])
                         Divider().opacity(0.5)
-                        ChecklistRow(
-                            title: "Parking brake set",
-                            subtitle: "Park / 1st gear",
-                            isChecked: $safetyChecks[2]
-                        )
+                        ChecklistRow(title: "Parking brake set", subtitle: "Park / 1st gear", isChecked: $safetyChecks[2])
                         Divider().opacity(0.5)
-                        ChecklistRow(
-                            title: "Passengers safe",
-                            subtitle: "Away from traffic",
-                            isChecked: $safetyChecks[3]
-                        )
+                        ChecklistRow(title: "Passengers safe", subtitle: "Away from traffic", isChecked: $safetyChecks[3])
                     }
                     .background(
                         RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -265,14 +330,7 @@ struct FlowScreen: View {
                         RoundedRectangle(cornerRadius: 14, style: .continuous)
                             .stroke(Color.black.opacity(0.06), lineWidth: 1)
                     )
-
-                    // Disclaimer
-                    Text("In an emergency, call local emergency services.")
-                        .font(.footnote)
-                        .foregroundStyle(.tertiary)
-                        .padding(.top, 2)
                 }
-
             } else {
 
                 // Safety chips (other steps)
@@ -469,6 +527,152 @@ private struct FlatTireInfographic: View {
             .padding(14)
         }
         .frame(height: 92)
+    }
+}
+
+private struct ScanBoxButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                // Background card
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .stroke(.black.opacity(0.08), lineWidth: 1)
+                    )
+
+                // Content
+                VStack(spacing: 10) {
+                    Spacer(minLength: 0)
+
+                    Image(systemName: "qrcode.viewfinder")
+                        .font(.system(size: 30, weight: .semibold))
+
+                    Text("Scan")
+                        .font(.headline)
+
+                    Text("Point the camera at the marker")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 12)
+
+                    Spacer(minLength: 0)
+                }
+                .padding(16)
+            }
+            // Make it vertically dominant: portrait-ish 2:3 ratio
+            .aspectRatio(2.0/3.0, contentMode: .fit)
+            .frame(minHeight: 160) // sensible floor on small phones
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct SafetyHeroHeader: View {
+    let onScan: () -> Void
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(Color(uiColor: .secondarySystemBackground))
+                .frame(height: 180)
+
+            VStack(spacing: 10) {
+                Text("Flat Tire")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+
+                ZStack {
+                    Circle()
+                        .fill(.ultraThinMaterial)
+                        .frame(width: 86, height: 86)
+
+                    Image(systemName: "tirepressure")
+                        .font(.system(size: 40, weight: .semibold))
+                        .foregroundStyle(.primary)
+                }
+            }
+
+            Button(action: onScan) {
+                HStack(spacing: 8) {
+                    Image(systemName: "qrcode.viewfinder")
+                    Text("Scan")
+                }
+                .font(.subheadline.weight(.semibold))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(Color.black.opacity(0.08), lineWidth: 1)
+                )
+            }
+            .padding(12)
+        }
+    }
+}
+
+private struct SafetyAdvisoryCard: View {
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Safety advisory")
+                    .font(.subheadline.weight(.semibold))
+                Text(text)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color(uiColor: .secondarySystemBackground))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.black.opacity(0.06), lineWidth: 1)
+        )
+    }
+}
+
+private struct ScanPlaceholderView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 16) {
+                Image(systemName: "qrcode.viewfinder")
+                    .font(.system(size: 54, weight: .semibold))
+                    .padding(.top, 40)
+
+                Text("Scan (placeholder)")
+                    .font(.title2.weight(.bold))
+
+                Text("Later, this will scan a QR code on a wheel marker to align the overlay.")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+
+                Spacer()
+            }
+            .navigationTitle("Scan")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
     }
 }
 
