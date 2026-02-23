@@ -12,11 +12,10 @@ enum Flows {
         mode: .flatTire,
         startStepID: "ft_safety",
         stepsInOrder: [
-            .init(
-                id: "ft_safety",
-                title: "Safety check",
-                body:
-"""
+          .init(
+            id: "ft_safety",
+            title: "Safety check",
+            body: """
 1) Turn on hazard lights.
 2) Pull over to a flat, stable surface away from traffic.
 3) Set parking brake. Put the car in Park (or 1st gear for manual).
@@ -24,32 +23,15 @@ enum Flows {
 
 If anything feels unsafe, stop and call for help.
 """,
-                safety: [.traffic, .stopIfUnsure],
-                nextStepID: "ft_tools",
-                choices: []
-            ),
+            safety: [.traffic, .stopIfUnsure],
+            nextStepID: "ft_tools",
+            choices: []
+          ),
 
-            .init(
-                id: "ft_unsafe_stop",
-                title: "Stop — get to safety",
-                body:
-"""
-Do not attempt a roadside tire change here.
-
-- Stay in a safe location (inside vehicle if on a busy road).
-- Call roadside assistance / emergency services as appropriate.
-- If possible, relocate to a safer, flatter area before attempting anything.
-""",
-                safety: [.traffic, .stopIfUnsure],
-                nextStepID: nil,
-                choices: []
-            ),
-
-            .init(
-                id: "ft_tools",
-                title: "Gather tools",
-                body:
-"""
+          .init(
+            id: "ft_tools",
+            title: "Gather tools",
+            body: """
 Find:
 - Spare tire (or donut)
 - Jack
@@ -57,145 +39,138 @@ Find:
 - Wheel chock (or a rock/wood block)
 - Flashlight + gloves (optional)
 """,
-                safety: [.heavyLift],
-                nextStepID: "ft_spare_check",
-                choices: []
-            ),
+            safety: [.heavyLift],
+            nextStepID: "ft_spare_check",
+            choices: []
+          ),
 
-            .init(
-                id: "ft_spare_check",
-                title: "Spare tire check",
-                body: """
-If you don’t have a spare/donut, the safest plan is usually roadside assistance or a tow.
+          .init(
+            id: "ft_spare_check",
+            title: "Spare tire check",
+            body: """
+If you don’t have a spare/donut, the safest plan is roadside assistance or a tow.
 
-If you do have a spare, confirm it’s usable:
+If you do have a spare:
 - Not flat or visibly damaged
 - Correct type/size for your vehicle
 - You have the lug key/adapter if needed
+
 If unsure, stop and get help.
 """,
-                safety: [.stopIfUnsure],
-                nextStepID: "ft_chock",   // (or whatever your next linear step is)
-                choices: []               // IMPORTANT: removes Spare/No spare buttons
-            ),
+            safety: [.stopIfUnsure],
+            nextStepID: "ft_chock",
+            choices: []
+          ),
 
-            .init(
-                id: "ft_chock",
-                title: "Chock the wheels",
-                body:
-"""
+          .init(
+            id: "ft_chock",
+            title: "Chock the wheels",
+            body: """
 Place a wheel chock (or block) against a tire that will stay on the ground to prevent rolling.
 
 If your car has a wheel cover/hubcap, remove it (if needed) before loosening lug nuts.
 """,
-                safety: [.traffic],
-                nextStepID: "ft_loosen",
-                choices: []
-            ),
+            safety: [.traffic],
+            nextStepID: "ft_loosen",
+            choices: []
+          ),
 
-            .init(
-                id: "ft_loosen",
-                title: "Loosen lug nuts (before lifting)",
-                body:
-"""
+          .init(
+            id: "ft_loosen",
+            title: "Loosen lug nuts (before lifting)",
+            body: """
 Use the lug wrench to loosen each lug nut 1/4–1/2 turn.
 
 Do NOT fully remove them yet.
 Loosening while the tire is on the ground prevents the wheel from spinning.
 """,
-                safety: [.pinchPoints, .heavyLift],
-                nextStepID: "ft_jackpoint",
-                choices: []
-            ),
+            safety: [.pinchPoints, .heavyLift],
+            nextStepID: "ft_jackpoint",
+            choices: []
+          ),
 
-            .init(
-                id: "ft_jackpoint",
-                title: "Find the jack point",
-                body:
-"""
+          .init(
+            id: "ft_jackpoint",
+            title: "Find the jack point",
+            body: """
 Locate the correct jacking point (often marked near the pinch weld).
 
 If you’re unsure:
 - Check the vehicle manual.
 - Wrong placement can damage the car or cause it to slip.
 """,
-                safety: [.pinchPoints, .stopIfUnsure],
-                nextStepID: "ft_jackup",
-                choices: []
-            ),
+            safety: [.pinchPoints, .stopIfUnsure],
+            nextStepID: "ft_jackup",
+            choices: []
+          ),
 
-            .init(
-                id: "ft_jackup",
-                title: "Position jack and lift",
-                body:
-"""
+          .init(
+            id: "ft_jackup",
+            title: "Position jack and lift",
+            body: """
 Position the jack at the jack point.
 Lift until the flat tire is just off the ground.
 
 Keep hands/feet clear of the underside.
 """,
-                safety: [.pinchPoints, .heavyLift],
-                nextStepID: "ft_remove",
-                choices: []
-            ),
+            safety: [.pinchPoints, .heavyLift],
+            nextStepID: "ft_remove",
+            choices: []
+          ),
 
-            .init(
-                id: "ft_remove",
-                title: "Remove the wheel",
-                body:
-"""
+          .init(
+            id: "ft_remove",
+            title: "Remove the wheel",
+            body: """
 1) Remove lug nuts completely.
 2) Pull the wheel straight off and place it flat on the ground.
 
 Keep lug nuts together (a pocket/container helps).
 """,
-                safety: [.heavyLift, .pinchPoints],
-                nextStepID: "ft_mount",
-                choices: []
-            ),
+            safety: [.heavyLift, .pinchPoints],
+            nextStepID: "ft_mount",
+            choices: []
+          ),
 
-            .init(
-                id: "ft_mount",
-                title: "Mount the spare",
-                body:
-"""
+          .init(
+            id: "ft_mount",
+            title: "Mount the spare",
+            body: """
 1) Align the spare with the wheel studs.
 2) Push it on fully.
 3) Hand-tighten lug nuts in a star pattern.
 """,
-                safety: [.heavyLift],
-                nextStepID: "ft_lower",
-                choices: []
-            ),
+            safety: [.heavyLift],
+            nextStepID: "ft_lower",
+            choices: []
+          ),
 
-            .init(
-                id: "ft_lower",
-                title: "Lower the car",
-                body:
-"""
+          .init(
+            id: "ft_lower",
+            title: "Lower the car",
+            body: """
 Lower until the tire touches the ground and won’t spin.
 
 Then tighten lug nuts firmly (still in a star pattern).
 """,
-                safety: [.pinchPoints],
-                nextStepID: "ft_aftercare",
-                choices: []
-            ),
+            safety: [.pinchPoints],
+            nextStepID: "ft_aftercare",
+            choices: []
+          ),
 
-            .init(
-                id: "ft_aftercare",
-                title: "Aftercare",
-                body:
-"""
+          .init(
+            id: "ft_aftercare",
+            title: "Aftercare",
+            body: """
 - Fully lower and remove the jack.
 - Tighten lug nuts again in a star pattern.
 - Check spare pressure when you can.
 - Donut spares often have speed/distance limits — drive carefully and get the tire serviced ASAP.
 """,
-                safety: [.stopIfUnsure],
-                nextStepID: nil,
-                choices: []
-            )
+            safety: [.stopIfUnsure],
+            nextStepID: nil,
+            choices: []
+          ),
         ]
     )
 

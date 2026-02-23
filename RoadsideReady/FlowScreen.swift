@@ -90,9 +90,8 @@ struct FlowScreen: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            if engine.currentStep.id != "ft_safety" { headerRow }
             contentArea
-            Spacer(minLength: 0)
+                .frame(maxHeight: .infinity, alignment: .top)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.horizontal, 16)
@@ -115,43 +114,39 @@ struct FlowScreen: View {
         }
     }
 
-    @ViewBuilder
     private var contentArea: some View {
-        if hSize == .regular {
-            // iPad / landscape: side-by-side, both stretch full height
-            HStack(alignment: .top, spacing: 12) {
-                visualPanel
-                    .frame(width: 360)
-                    .frame(maxHeight: .infinity, alignment: .top)
+        Group {
+            if hSize == .regular {
+                HStack(alignment: .top, spacing: 12) {
+                    visualPanel
+                        .frame(width: 360)
+                        .frame(maxHeight: .infinity, alignment: .top)
 
-                stepCard
-                    .frame(maxHeight: .infinity, alignment: .top)
-            }
-        } else {
-            // iPhone / portrait: centered visual panel (not full-width)
-            VStack(spacing: 12) {
-                visualPanel
-                    .frame(maxWidth: 420)
-                    .frame(height: 220)
-                    .frame(maxWidth: .infinity, alignment: .center)
+                    stepCard
+                        .frame(maxHeight: .infinity, alignment: .top)
+                }
+                .frame(maxHeight: .infinity, alignment: .top)
+            } else {
+                // iPhone / portrait: centered visual panel (not full-width)
+                VStack(spacing: 12) {
+                    visualPanel
+                        .frame(maxWidth: 420)
+                        .frame(height: 220)
+                        .frame(maxWidth: .infinity, alignment: .center)
 
-                stepCard
+                    if engine.currentStep.id == "ft_safety" {
+                        // Stretch the safety card to fill remaining vertical space
+                        stepCard
+                            .frame(maxHeight: .infinity, alignment: .top)
+                    } else {
+                        stepCard
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
-            .frame(maxWidth: .infinity, alignment: .top)
         }
     }
     
-    private var headerRow: some View {
-        HStack {
-            Text(engine.progressText)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text(engine.mode.rawValue)
-                .font(.subheadline.weight(.semibold))
-        }
-    }
-
     private var sectionsSheet: some View {
         NavigationStack {
             List {
@@ -173,6 +168,16 @@ struct FlowScreen: View {
                 }
             }
         }
+    }
+    
+    private var stepPill: some View {
+        Text(engine.progressText)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color.black.opacity(0.35), in: Capsule())
+            .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 1))
     }
 
     private var bottomDock: some View {
@@ -248,22 +253,30 @@ struct FlowScreen: View {
                 // Infographic layer (always available)
                 Group {
                     if UIImage(named: heroAssetName) != nil {
-                        Image(heroAssetName)
-                            .resizable()
-                            .scaledToFit()
-                            .padding(20)
+                        Image(heroAssetName).resizable()
                     } else if UIImage(named: "hero_tire") != nil {
-                        Image("hero_tire")
-                            .resizable()
-                            .scaledToFit()
-                            .padding(20)
+                        Image("hero_tire").resizable()
                     } else {
                         Image(systemName: engine.mode == .flatTire ? "tirepressure" : "battery.0")
-                            .font(.system(size: 44, weight: .semibold))
+                            .resizable()
                             .foregroundStyle(.secondary)
+                            .padding(40)
                     }
                 }
+                .scaledToFit()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(20)
                 .opacity(visualMode == .infographic ? 1 : 0)
+                #if DEBUG
+                .overlay(alignment: .bottomLeading) {
+                    Text("\(heroAssetName) | exists: \(UIImage(named: heroAssetName) != nil)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(8)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .padding(10)
+                }
+                #endif
 
                 if cameraEverOpened || visualMode == .camera {
                     Group {
@@ -279,29 +292,47 @@ struct FlowScreen: View {
                 }
             }
         }
-        .overlay(alignment: .topTrailing) {
-            HStack(spacing: 8) {
-                Button { setVisualMode(.infographic) } label: {
-                    Image(systemName: "doc.text.image")
-                        .font(.system(size: 14, weight: .semibold))
-                        .frame(width: 36, height: 36)
-                }
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .buttonStyle(.plain)
-
-                Button { setVisualMode(.camera) } label: {
-                    Image(systemName: "camera.viewfinder")
-                        .font(.system(size: 14, weight: .semibold))
-                        .frame(width: 36, height: 36)
-                }
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .buttonStyle(.plain)
-            }
-            .padding(10)
+        .overlay(alignment: .bottom) {
+            visualModeToggle.padding(12)
         }
     }
 
+    private var visualModeToggle: some View {
+        HStack(spacing: 0) {
+            toggleButton(.infographic, system: "doc.text.image", label: "Infographic")
+            Divider().opacity(0.25).frame(height: 18)
+            toggleButton(.camera, system: "camera.viewfinder", label: "Camera")
+        }
+        .padding(4)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().stroke(Color.black.opacity(0.08), lineWidth: 1))
+    }
+
+    private func toggleButton(_ mode: VisualMode, system: String, label: String) -> some View {
+        Button { setVisualMode(mode) } label: {
+            Image(systemName: system)
+                .font(.system(size: 14, weight: .semibold))
+                .frame(width: 44, height: 32)
+                .foregroundStyle(mode == visualMode ? Color.accentColor : Color.secondary)
+                .background(mode == visualMode ? Color.accentColor.opacity(0.12) : Color.clear, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+
     private var stepCard: some View {
+        ZStack(alignment: .topTrailing) {
+            stepCardContent
+
+            if engine.currentStep.id != "ft_safety" {
+                stepPill.padding(12)
+            }
+        }
+        .padding()
+        .background(RoundedRectangle(cornerRadius: 18).fill(.ultraThinMaterial))
+    }
+    
+    private var stepCardContent: some View {
         VStack(alignment: .leading, spacing: 12) {
 
             if engine.currentStep.id != "ft_safety" {
@@ -367,8 +398,6 @@ struct FlowScreen: View {
                 }
             }
         }
-        .padding()
-        .background(RoundedRectangle(cornerRadius: 18).fill(.ultraThinMaterial))
     }
     
     private var choiceSelector: some View {
