@@ -56,32 +56,27 @@ Find:
 - Lug wrench
 - Wheel chock (or a rock/wood block)
 - Flashlight + gloves (optional)
-
-Next: confirm you actually have a usable spare.
 """,
                 safety: [.heavyLift],
-                nextStepID: nil,
-                choices: [
-                    .init(id: "ft_spare_yes", title: "I have a spare", nextStepID: "ft_chock"),
-                    .init(id: "ft_spare_no", title: "No spare", nextStepID: "ft_no_spare")
-                ]
+                nextStepID: "ft_spare_check",
+                choices: []
             ),
 
             .init(
-                id: "ft_no_spare",
-                title: "No spare — what to do",
-                body:
-"""
-If there’s no spare/donut:
-- Call roadside assistance or a tow.
-- Do not drive on the rim.
-- Tire sealant kits only help for small punctures and may not work for sidewall damage.
+                id: "ft_spare_check",
+                title: "Spare tire check",
+                body: """
+If you don’t have a spare/donut, the safest plan is usually roadside assistance or a tow.
 
-Goal: protect the wheel and get professional help.
+If you do have a spare, confirm it’s usable:
+- Not flat or visibly damaged
+- Correct type/size for your vehicle
+- You have the lug key/adapter if needed
+If unsure, stop and get help.
 """,
                 safety: [.stopIfUnsure],
-                nextStepID: nil,
-                choices: []
+                nextStepID: "ft_chock",   // (or whatever your next linear step is)
+                choices: []               // IMPORTANT: removes Spare/No spare buttons
             ),
 
             .init(
@@ -342,3 +337,4 @@ Safety > speed.
         ]
     )
 }
+

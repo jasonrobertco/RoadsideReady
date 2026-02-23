@@ -6,18 +6,53 @@
 //
 
 import SwiftUI
+import UIKit
 
 
 struct FlowScreen: View {
+    enum VisualMode { case infographic, camera }
+    @Environment(\.horizontalSizeClass) private var hSize
+
     @ObservedObject var engine: FlowEngine
     @State private var showSections = false
     @State private var isAligned = false
     @State private var safetyChecks: [Bool] = Array(repeating: false, count: 4)
-    @State private var showAR = false
-    @State private var showScan = false
+    @State private var selectedChoiceID: String? = nil
+    @State private var choiceMemory: [String: String] = [:]
+    @State private var visualMode: VisualMode = .infographic
 
-    private let progressBarHeight: CGFloat = 56
-    
+    @State private var cameraEverOpened = false
+
+    private let flatTireHeroMap: [String: String] = [
+        "ft_safety": "hero_safety",
+        "ft_tools": "hero_tire",
+        "ft_spare_check": "hero_tire",
+        "ft_chock": "hero_chock",
+        "ft_loosen": "hero_lugs",
+        "ft_jackpoint": "hero_jack",
+        "ft_jackup": "hero_jack",
+        "ft_remove": "hero_lugs",
+        "ft_mount": "hero_tire",
+        "ft_lower": "hero_jack",
+        "ft_aftercare": "hero_tire",
+    ]
+
+    private var heroAssetName: String {
+        if engine.mode == .flatTire {
+            return flatTireHeroMap[engine.currentStep.id] ?? "hero_tire"
+        } else {
+            return "hero_battery"
+        }
+    }
+
+    private var visualPanelHeight: CGFloat { hSize == .regular ? 280 : 220 }
+    private var visualPanelWidth: CGFloat? { hSize == .regular ? 360 : nil }
+
+    private func setVisualMode(_ mode: VisualMode) {
+        if mode == .camera { cameraEverOpened = true }
+        visualMode = mode
+    }
+
     private var safetyReady: Bool {
         engine.currentStep.id != "ft_safety" || safetyChecks.allSatisfy { $0 }
     }
@@ -25,16 +60,38 @@ struct FlowScreen: View {
     private var alignmentReady: Bool {
         engine.currentStep.id != "ft_align" || isAligned
     }
-
-    private var canProceed: Bool {
-        engine.canGoNext && safetyReady && alignmentReady
+    
+    private var selectedChoice: RescueChoice? {
+        guard let id = selectedChoiceID else { return nil }
+        return engine.currentStep.choices.first { $0.id == id }
     }
 
+    private var canAdvanceFromStep: Bool {
+        engine.currentStep.choices.isEmpty ? engine.canGoNext : (selectedChoice != nil)
+    }
+
+    private var canTapNext: Bool {
+        // Not gated by checklist/alignment.
+        // Only disable on true end-of-flow.
+        if !engine.currentStep.choices.isEmpty { return true }
+        return engine.canGoNext
+    }
+
+    private var isFirstScreen: Bool { !engine.canGoBack }
+
+    private var firstContinueEnabled: Bool {
+        // Only gate the very first screen, and only if it’s the safety checklist step.
+        if isFirstScreen && engine.currentStep.id == "ft_safety" {
+            return safetyChecks.allSatisfy { $0 }
+        }
+        // Otherwise, let Continue work.
+        return engine.canGoNext || !engine.currentStep.choices.isEmpty
+    }
 
     var body: some View {
         VStack(spacing: 12) {
             if engine.currentStep.id != "ft_safety" { headerRow }
-            stepCard
+            contentArea
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -50,233 +107,40 @@ struct FlowScreen: View {
                     Button("Sections") { showSections = true }
                 }
             }
-            if engine.mode == .flatTire {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { showScan = true } label: {
-                        Image(systemName: "camera")
-                    }
-                    .accessibilityLabel("Open scan")
-                }
-            }
-        }
-        .fullScreenCover(isPresented: $showScan) {
-            ScanPlaceholderView()
-        }
-        .fullScreenCover(isPresented: $showAR) {
-            ARFullScreenView(currentStepID: engine.currentStep.id, isAligned: $isAligned)
         }
         .onChange(of: engine.currentStep.id) { _, newID in
             if newID == "ft_safety" { safetyChecks = Array(repeating: false, count: 4) }
-            if newID != "ft_align" { isAligned = false }
+            // Keep AR alignment state across steps; do not reset isAligned here
+            selectedChoiceID = choiceMemory[newID]
         }
     }
-    
-    private var bottomBar: some View {
-        VStack(spacing: 10) {
-            if engine.currentStep.id == "ft_safety" {
-                Button("Continue") {
-                    guard safetyReady else { return }
-                    engine.goNext()
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .frame(maxWidth: .infinity)
-                .disabled(!safetyReady)
-            } else if engine.currentStep.choices.isEmpty {
-                HStack(spacing: 12) {
-                    Button("Back") { engine.goBack() }
-                        .buttonStyle(.bordered)
-                        .disabled(!engine.canGoBack)
-                    Spacer()
-                    Button(engine.canGoNext ? "Next" : "Done") {
-                        guard canProceed else { return }
-                        engine.goNext()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!canProceed)
-                }
-            }
 
-            StepProgressIndicator(
-                steps: engine.stepsInOrder,
-                currentStepID: engine.currentStep.id,
-                mode: engine.mode
-            )
-            .padding(.vertical, 8)
-            .padding(.horizontal, 14)
-            .background(.thinMaterial, in: Capsule())
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 10)
-        .padding(.bottom, 12)
-        .frame(maxWidth: .infinity)
-        .background(.ultraThinMaterial)
-        .overlay(Divider(), alignment: .top)
-        .ignoresSafeArea(.container, edges: .horizontal)
-    }
-
-    private var bottomDock: some View {
-        VStack(spacing: 10) {
-            bottomActions
-
-            StepProgressIndicator(
-                steps: engine.stepsInOrder,
-                currentStepID: engine.currentStep.id,
-                mode: engine.mode
-            )
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 10)
-        .padding(.bottom, 12)
-        .frame(maxWidth: .infinity)
-        .background(.ultraThinMaterial)
-        .overlay(Divider(), alignment: .top)
-    }
-    
     @ViewBuilder
-    private var bottomActions: some View {
-        if engine.currentStep.id == "ft_safety" {
-            safetyProceedButton
-        } else if !engine.currentStep.choices.isEmpty {
-            choiceButtons
+    private var contentArea: some View {
+        if hSize == .regular {
+            // iPad / landscape: side-by-side, both stretch full height
+            HStack(alignment: .top, spacing: 12) {
+                visualPanel
+                    .frame(width: 360)
+                    .frame(maxHeight: .infinity, alignment: .top)
+
+                stepCard
+                    .frame(maxHeight: .infinity, alignment: .top)
+            }
         } else {
-            navButtons
-        }
-    }
+            // iPhone / portrait: centered visual panel (not full-width)
+            VStack(spacing: 12) {
+                visualPanel
+                    .frame(maxWidth: 420)
+                    .frame(height: 220)
+                    .frame(maxWidth: .infinity, alignment: .center)
 
-    private var heroHeader: some View {
-        VStack(spacing: 10) {
-            Text(engine.mode == .flatTire ? "Flat Tire" : "Dead Battery")
-                .font(.headline)
-                .foregroundStyle(.secondary)
-            ZStack {
-                RoundedRectangle(cornerRadius: 28, style: .continuous)
-                    .fill(.ultraThinMaterial)
-                    .frame(height: 160)
-                Image(systemName: engine.mode == .flatTire ? "tirepressure" : "battery.0")
-                    .font(.system(size: 54, weight: .semibold))
-                    .foregroundStyle(.primary)
+                stepCard
             }
+            .frame(maxWidth: .infinity, alignment: .top)
         }
-    }
-
-    private var safetyAdvisoryCard: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Safety advisory")
-                    .font(.subheadline.weight(.semibold))
-                Text("If you’re in danger, call local emergency services.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-        }
-        .padding(14)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Color.black.opacity(0.08), lineWidth: 1))
-    }
-
-    private var safetyChecklistCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Safety check").font(.title2.weight(.bold))
-            Text("Tap each item to confirm.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            VStack(spacing: 0) {
-                ChecklistRow(title: "Hazard lights on", subtitle: "Stay visible", isChecked: $safetyChecks[0])
-                Divider().opacity(0.5)
-                ChecklistRow(title: "Pulled over safely", subtitle: "Flat, well-lit spot", isChecked: $safetyChecks[1])
-                Divider().opacity(0.5)
-                ChecklistRow(title: "Parking brake set", subtitle: "Park / 1st gear", isChecked: $safetyChecks[2])
-                Divider().opacity(0.5)
-                ChecklistRow(title: "Passengers safe", subtitle: "Away from traffic", isChecked: $safetyChecks[3])
-            }
-            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color(uiColor: .secondarySystemBackground)))
-            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.black.opacity(0.06), lineWidth: 1))
-            Text("In an emergency, call local emergency services.")
-                .font(.footnote)
-                .foregroundStyle(.tertiary)
-                .padding(.top, 2)
-        }
-        .padding()
-        .background(RoundedRectangle(cornerRadius: 18).fill(.ultraThinMaterial))
     }
     
-
-    private var shouldShowCameraLauncher: Bool {
-        engine.mode == .flatTire && engine.currentStep.id != "ft_safety" && ["ft_align", "ft_loosen"].contains(engine.currentStep.id)
-    }
-
-    
-    private var cameraLauncher: some View {
-        Button {
-            showAR = true
-        } label: {
-            HStack(spacing: 12) {
-                Image(systemName: "camera.viewfinder")
-                    .font(.title3.weight(.semibold))
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Open Camera")
-                        .font(.headline)
-
-                    Text(isAligned ? "Wheel aligned" : "Camera off • Tap to align wheel")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                Image(systemName: "chevron.right")
-                    .foregroundStyle(.secondary)
-            }
-            .padding()
-            .frame(maxWidth: .infinity)
-            .background(RoundedRectangle(cornerRadius: 18).fill(.ultraThinMaterial))
-        }
-        .buttonStyle(.plain)
-    }
-
-    // MARK: - Hero (centered) + Scan pill (top-right)
-    private var safetyHeroCard: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(Color(uiColor: .secondarySystemBackground))
-                .frame(height: 170)
-
-            VStack(spacing: 10) {
-                Text("Flat Tire")
-                    .font(.headline)
-                    .foregroundStyle(.secondary)
-
-                // Placeholder hero icon (replace later with your tire illustration)
-                Circle()
-                    .fill(Color.primary.opacity(0.06))
-                    .overlay(
-                        Circle().stroke(Color.primary.opacity(0.10), lineWidth: 1)
-                    )
-                    .frame(width: 92, height: 92)
-                    .overlay(
-                        Image(systemName: "exclamationmark")
-                            .font(.system(size: 30, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                    )
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        }
-        .overlay {
-            ScanBoxButton {
-                showAR = true
-            }
-            .frame(maxWidth: 420)
-            .padding(24)
-        }
-    }
-
-
     private var headerRow: some View {
         HStack {
             Text(engine.progressText)
@@ -288,6 +152,154 @@ struct FlowScreen: View {
         }
     }
 
+    private var sectionsSheet: some View {
+        NavigationStack {
+            List {
+                ForEach(engine.stepsInOrder, id: \.id) { (step: RescueStep) in
+                    HStack {
+                        Text(step.title)
+                        Spacer()
+                        if step.id == engine.currentStep.id {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(Color.accentColor)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Sections")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { showSections = false }
+                }
+            }
+        }
+    }
+
+    private var bottomDock: some View {
+        VStack(spacing: 10) {
+            if engine.canGoBack {
+                bottomNavRow
+            } else {
+                bottomContinueRow
+            }
+
+            StepProgressIndicator(
+                steps: engine.stepsInOrder,
+                currentStepID: engine.currentStep.id,
+                mode: engine.mode
+            )
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 12)
+        .frame(maxWidth: .infinity)
+        .background(.ultraThinMaterial)
+        .overlay(Divider(), alignment: .top)
+    }
+    
+    private var bottomContinueRow: some View {
+        HStack {
+            Spacer(minLength: 0)
+            Button("Continue") { handleNext() }
+                .buttonStyle(RRPrimaryPillButtonStyle())
+                .frame(width: 220, height: 48)
+                .disabled(!firstContinueEnabled)
+            Spacer(minLength: 0)
+        }
+    }
+    
+    private var bottomNavRow: some View {
+        HStack(spacing: 12) {
+            Button("Back") { engine.goBack() }
+                .buttonStyle(RRSecondaryPillButtonStyle())
+                .frame(width: 160, height: 48)
+                .disabled(!engine.canGoBack)
+
+            Button("Next") { handleNext() }
+                .buttonStyle(RRPrimaryPillButtonStyle())
+                .frame(width: 160, height: 48)
+                .disabled(!canTapNext)
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    private func handleNext() {
+        // If this step has choices, Next takes the selected one, or defaults to the first.
+        if !engine.currentStep.choices.isEmpty {
+            let choice = selectedChoice ?? engine.currentStep.choices.first!
+            engine.select(choice)
+            return
+        }
+
+        engine.goNext()
+    }
+
+
+    private var visualPanel: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .stroke(Color.black.opacity(0.06), lineWidth: 1)
+                )
+
+            ZStack {
+                // Infographic layer (always available)
+                Group {
+                    if UIImage(named: heroAssetName) != nil {
+                        Image(heroAssetName)
+                            .resizable()
+                            .scaledToFit()
+                            .padding(20)
+                    } else if UIImage(named: "hero_tire") != nil {
+                        Image("hero_tire")
+                            .resizable()
+                            .scaledToFit()
+                            .padding(20)
+                    } else {
+                        Image(systemName: engine.mode == .flatTire ? "tirepressure" : "battery.0")
+                            .font(.system(size: 44, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .opacity(visualMode == .infographic ? 1 : 0)
+
+                if cameraEverOpened || visualMode == .camera {
+                    Group {
+#if targetEnvironment(simulator)
+                        ARUnavailableInlineView()
+#else
+                        ARViewContainer(currentStepID: engine.currentStep.id, isAligned: $isAligned)
+#endif
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                    .opacity(visualMode == .camera ? 1 : 0)
+                    .allowsHitTesting(visualMode == .camera)
+                }
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            HStack(spacing: 8) {
+                Button { setVisualMode(.infographic) } label: {
+                    Image(systemName: "doc.text.image")
+                        .font(.system(size: 14, weight: .semibold))
+                        .frame(width: 36, height: 36)
+                }
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .buttonStyle(.plain)
+
+                Button { setVisualMode(.camera) } label: {
+                    Image(systemName: "camera.viewfinder")
+                        .font(.system(size: 14, weight: .semibold))
+                        .frame(width: 36, height: 36)
+                }
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .buttonStyle(.plain)
+            }
+            .padding(10)
+        }
+    }
 
     private var stepCard: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -298,12 +310,9 @@ struct FlowScreen: View {
                     .font(.title2.weight(.bold))
             }
 
-            // Safety step: simplified checklist layout
+            // Safety step: simplified checklist layout (visuals are now in the persistent visualPanel)
             if engine.currentStep.id == "ft_safety" {
                 VStack(alignment: .leading, spacing: 12) {
-
-                    safetyHeroCard
-
                     SafetyAdvisoryCard(text: "If you’re in danger, call local emergency services.")
 
                     Text("Safety check")
@@ -352,13 +361,47 @@ struct FlowScreen: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)
                 }
+                if !engine.currentStep.choices.isEmpty {
+                    Divider()
+                    choiceSelector
+                }
             }
         }
         .padding()
         .background(RoundedRectangle(cornerRadius: 18).fill(.ultraThinMaterial))
     }
     
-    
+    private var choiceSelector: some View {
+        let twoChoices = Array(engine.currentStep.choices.prefix(2))
+
+        return HStack(spacing: 12) {
+            ForEach(twoChoices, id: \.id) { (choice: RescueChoice) in
+                let isSelected = (selectedChoiceID == choice.id)
+
+                if isSelected {
+                    Button {
+                        selectedChoiceID = choice.id
+                        choiceMemory[engine.currentStep.id] = choice.id
+                    } label: {
+                        Text(choice.title)
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .buttonStyle(RRPrimaryPillButtonStyle())
+                } else {
+                    Button {
+                        selectedChoiceID = choice.id
+                        choiceMemory[engine.currentStep.id] = choice.id
+                    } label: {
+                        Text(choice.title)
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .buttonStyle(RRSecondaryPillButtonStyle())
+                }
+            }
+        }
+    }
+
+
     private struct SafetyHeroIcon: View {
         var body: some View {
             ZStack {
@@ -379,74 +422,37 @@ struct FlowScreen: View {
     }
 
 
-    private var navButtons: some View {
-        HStack(spacing: 10) {
-            Button("Back") { engine.goBack() }
-                .buttonStyle(.bordered)
-                .disabled(!engine.canGoBack)
+}
 
-            Spacer()
+private struct RRPrimaryPillButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
 
-            Button(engine.canGoNext ? "Next" : "Done") {
-                guard canProceed else { return }
-                engine.goNext()
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(!canProceed)
-        }
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.headline)
+            .foregroundStyle(Color.white.opacity(isEnabled ? 1.0 : 0.6))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(
+                Capsule().fill(isEnabled ? Color.accentColor : Color.gray.opacity(0.35))
+            )
+            .opacity(configuration.isPressed ? 0.85 : 1.0)
     }
-    
-    private var safetyProceedButton: some View {
-        Button(safetyReady ? "Continue" : "Check") {
-            guard safetyReady else { return }
-            engine.goNext()
-        }
-        .buttonStyle(.borderedProminent)
-        .controlSize(.large)
-        .frame(maxWidth: .infinity)
-        .disabled(!safetyReady)
+}
+
+private struct RRSecondaryPillButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.headline)
+            .foregroundStyle(Color.primary)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(
+                Capsule().fill(Color(uiColor: .secondarySystemBackground))
+            )
+            .overlay(
+                Capsule().stroke(Color.black.opacity(0.10), lineWidth: 1)
+            )
+            .opacity(configuration.isPressed ? 0.85 : 1.0)
     }
-
-
-    private var choiceButtons: some View {
-        VStack(spacing: 12) {
-            ForEach(engine.currentStep.choices) { choice in
-                Button(choice.title) {
-                    engine.select(choice)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .frame(maxWidth: .infinity)
-            }
-
-            if engine.canGoBack {
-                Button("Back") { engine.goBack() }
-                    .buttonStyle(.bordered)
-            }
-        }
-    }
-
-
-    private var sectionsSheet: some View {
-        NavigationStack {
-            List {
-                ForEach(engine.stepsInOrder) { step in
-                    Button {
-                        engine.jump(to: step.id)
-                        showSections = false
-                    } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(step.title).font(.body.weight(.semibold))
-                            Text(step.id).font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Dead Battery Sections")
-        }
-    }
-    
-    
 }
 
 struct SafetyChip: View {
@@ -495,127 +501,6 @@ private struct ChecklistRow: View {
     }
 }
 
-private struct FlatTireInfographic: View {
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 14)
-                .fill(Color(uiColor: .secondarySystemBackground))
-
-            HStack(spacing: 14) {
-                ZStack {
-                    Image(systemName: "car.side.fill")
-                        .font(.system(size: 44, weight: .semibold))
-                        .foregroundStyle(.secondary)
-
-                    // “flat tire” emphasis (simple highlight)
-                    Circle()
-                        .stroke(Color.accentColor, lineWidth: 3)
-                        .frame(width: 18, height: 18)
-                        .offset(x: -18, y: 14)
-                }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Safety first")
-                        .font(.headline)
-                    Text("Complete the checks before continuing.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-            }
-            .padding(14)
-        }
-        .frame(height: 92)
-    }
-}
-
-private struct ScanBoxButton: View {
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            ZStack {
-                // Background card
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(.ultraThinMaterial)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .stroke(.black.opacity(0.08), lineWidth: 1)
-                    )
-
-                // Content
-                VStack(spacing: 10) {
-                    Spacer(minLength: 0)
-
-                    Image(systemName: "qrcode.viewfinder")
-                        .font(.system(size: 30, weight: .semibold))
-
-                    Text("Scan")
-                        .font(.headline)
-
-                    Text("Point the camera at the marker")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 12)
-
-                    Spacer(minLength: 0)
-                }
-                .padding(16)
-            }
-            // Make it vertically dominant: portrait-ish 2:3 ratio
-            .aspectRatio(2.0/3.0, contentMode: .fit)
-            .frame(minHeight: 160) // sensible floor on small phones
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-private struct SafetyHeroHeader: View {
-    let onScan: () -> Void
-
-    var body: some View {
-        ZStack(alignment: .topTrailing) {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(Color(uiColor: .secondarySystemBackground))
-                .frame(height: 180)
-
-            VStack(spacing: 10) {
-                Text("Flat Tire")
-                    .font(.headline)
-                    .foregroundStyle(.secondary)
-
-                ZStack {
-                    Circle()
-                        .fill(.ultraThinMaterial)
-                        .frame(width: 86, height: 86)
-
-                    Image(systemName: "tirepressure")
-                        .font(.system(size: 40, weight: .semibold))
-                        .foregroundStyle(.primary)
-                }
-            }
-
-            Button(action: onScan) {
-                HStack(spacing: 8) {
-                    Image(systemName: "qrcode.viewfinder")
-                    Text("Scan")
-                }
-                .font(.subheadline.weight(.semibold))
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(Color.black.opacity(0.08), lineWidth: 1)
-                )
-            }
-            .padding(12)
-        }
-    }
-}
-
 private struct SafetyAdvisoryCard: View {
     let text: String
 
@@ -644,34 +529,22 @@ private struct SafetyAdvisoryCard: View {
     }
 }
 
-private struct ScanPlaceholderView: View {
-    @Environment(\.dismiss) private var dismiss
-
+private struct ARUnavailableInlineView: View {
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 16) {
-                Image(systemName: "qrcode.viewfinder")
-                    .font(.system(size: 54, weight: .semibold))
-                    .padding(.top, 40)
-
-                Text("Scan (placeholder)")
-                    .font(.title2.weight(.bold))
-
-                Text("Later, this will scan a QR code on a wheel marker to align the overlay.")
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 24)
-
-                Spacer()
+        ZStack {
+            Color.black.opacity(0.90)
+            VStack(spacing: 8) {
+                Image(systemName: "camera.fill")
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.9))
+                Text("Camera unavailable in Simulator")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.9))
+                Text("Using infographic instead.")
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.75))
             }
-            .navigationTitle("Scan")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Done") { dismiss() }
-                }
-            }
+            .padding(16)
         }
     }
 }

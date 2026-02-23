@@ -19,22 +19,23 @@ struct ARViewContainer: UIViewRepresentable {
         let config = ARWorldTrackingConfiguration()
         config.planeDetection = [.horizontal]
         config.environmentTexturing = .automatic
-
         arView.session.run(config)
 
         let tap = UITapGestureRecognizer(target: context.coordinator,
-                                          action: #selector(Coordinator.handleTap(_:)))
+                                         action: #selector(Coordinator.handleTap(_:)))
         arView.addGestureRecognizer(tap)
 
         context.coordinator.arView = arView
-
         return arView
     }
 
     func updateUIView(_ uiView: ARView, context: Context) {
-        if currentStepID == "ft_loosen" {
-                context.coordinator.showLugMarkers()
-            }
+        switch currentStepID {
+        case "ft_loosen":
+            context.coordinator.showLugMarkers()
+        default:
+            context.coordinator.showRingOnly()
+        }
     }
 
     func makeCoordinator() -> Coordinator {
@@ -43,6 +44,7 @@ struct ARViewContainer: UIViewRepresentable {
 
     class Coordinator: NSObject {
         var wheelAnchor: AnchorEntity?
+        var ringEntity: ModelEntity?
 
         var arView: ARView?
         @Binding var isAligned: Bool
@@ -52,47 +54,51 @@ struct ARViewContainer: UIViewRepresentable {
         }
 
         @objc func handleTap(_ sender: UITapGestureRecognizer) {
-            print("handleTap fired")
             guard let arView = arView else { return }
-
             let location = sender.location(in: arView)
 
             let results = arView.raycast(from: location,
                                          allowing: .existingPlaneGeometry,
                                          alignment: .horizontal)
-            print("Tap detected")
-            print("Raycast count:", results.count)
+            guard let first = results.first else { return }
 
-            if let first = results.first {
+            let anchor = AnchorEntity(world: first.worldTransform)
+            self.wheelAnchor = anchor
 
-                let anchor = AnchorEntity(world: first.worldTransform)
-                self.wheelAnchor = anchor
+            let ringMesh = MeshResource.generateCylinder(height: 0.01, radius: 0.15)
+            let ringMat = SimpleMaterial(color: .blue, isMetallic: false)
+            let ring = ModelEntity(mesh: ringMesh, materials: [ringMat])
+            self.ringEntity = ring
 
-                let ring = MeshResource.generateCylinder(
-                    height: 0.01,
-                    radius: 0.15
-                )
+            anchor.addChild(ring)
+            arView.scene.addAnchor(anchor)
 
-                let material = SimpleMaterial(color: .blue,
-                                              isMetallic: false)
-
-                let entity = ModelEntity(mesh: ring,
-                                         materials: [material])
-
-                anchor.addChild(entity)
-                arView.scene.addAnchor(anchor)
-
-                isAligned = true
-            }
-            
+            isAligned = true
         }
+
+        func showRingOnly() {
+            guard let anchor = wheelAnchor else { return }
+            // Keep ring, remove anything else (lug markers, etc.)
+            if let ring = ringEntity {
+                anchor.children.removeAll(where: { $0 !== ring })
+                if ring.parent == nil { anchor.addChild(ring) }
+            } else {
+                anchor.children.removeAll()
+            }
+        }
+
         func showLugMarkers() {
             guard let anchor = wheelAnchor else { return }
 
-            // Remove previous children (avoid stacking)
-            anchor.children.removeAll()
+            // Keep ring, clear other children
+            if let ring = ringEntity {
+                anchor.children.removeAll(where: { $0 !== ring })
+                if ring.parent == nil { anchor.addChild(ring) }
+            } else {
+                anchor.children.removeAll()
+            }
 
-            let lugRadius: Float = 0.1
+            let lugRadius: Float = 0.10
             let lugCount = 5
 
             for i in 0..<lugCount {
@@ -101,13 +107,11 @@ struct ARViewContainer: UIViewRepresentable {
                 let z = lugRadius * sin(angle)
 
                 let sphere = MeshResource.generateSphere(radius: 0.015)
-                let material = SimpleMaterial(color: .red, isMetallic: false)
-                let lug = ModelEntity(mesh: sphere, materials: [material])
-
+                let mat = SimpleMaterial(color: .red, isMetallic: false)
+                let lug = ModelEntity(mesh: sphere, materials: [mat])
                 lug.position = [x, 0.01, z]
                 anchor.addChild(lug)
             }
         }
-
     }
 }
