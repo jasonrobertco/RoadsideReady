@@ -9,10 +9,8 @@ import Foundation
 import Combine
 import AVFoundation
 
-@MainActor
 final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
-    @Published var isSpeaking: Bool = false
-
+    @Published private(set) var isSpeaking: Bool = false
     private let synth = AVSpeechSynthesizer()
 
     override init() {
@@ -20,11 +18,13 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
         synth.delegate = self
     }
 
+    @MainActor
     func toggle(_ text: String) {
         if synth.isSpeaking { stop() }
         else { speak(text) }
     }
 
+    @MainActor
     func speak(_ text: String) {
         stop()
         let utterance = AVSpeechUtterance(string: text)
@@ -35,17 +35,19 @@ final class SpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDel
         isSpeaking = true
     }
 
+    @MainActor
     func stop() {
         synth.stopSpeaking(at: .immediate)
         isSpeaking = false
     }
 
+    // Delegate callbacks may arrive off-main; hop to main before touching @Published.
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        isSpeaking = false
+        Task { @MainActor in self.isSpeaking = false }
     }
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        isSpeaking = false
+        Task { @MainActor in self.isSpeaking = false }
     }
 }
 

@@ -26,6 +26,7 @@ struct StepProgressIndicator: View {
                         height: idx == currentIndex ? 10 : 8
                     )
                     .scaleEffect(idx == currentIndex ? 1.06 : 1.0)
+                    .shadow(color: Color.black.opacity(idx == currentIndex ? 0.18 : 0.0), radius: 1.2, x: 0, y: 0.6)
                     .animation(.spring(response: 0.28, dampingFraction: 0.86), value: currentStepID)
             }
         }
@@ -34,7 +35,7 @@ struct StepProgressIndicator: View {
     }
 
     private func dotColor(for idx: Int) -> Color {
-        idx <= currentIndex ? Color.accentColor : Color.gray.opacity(0.25)
+        idx <= currentIndex ? Color.accentColor : Color.gray.opacity(0.34)
     }
 }
 

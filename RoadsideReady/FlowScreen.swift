@@ -8,55 +8,86 @@
 import SwiftUI
 import UIKit
 
+private extension View {
+    func rrShadow() -> some View {
+        self.shadow(color: Color.black.opacity(0.12), radius: 6, x: 0, y: 2)
+    }
+}
 
 struct FlowScreen: View {
+    var body: some View {
+        VStack(spacing: 0) {
+            contentArea
+        }
+        .safeAreaInset(edge: .bottom) {
+            bottomDock
+                .background(Color(uiColor: .systemBackground))
+        }
+        .sheet(isPresented: $showSections) {
+            sectionsSheet
+        }
+        .sheet(isPresented: $showCompletion) {
+            CompletionSheet {
+                // restart without touching FlowEngine
+                while engine.canGoBack { engine.goBack() }
+                showCompletion = false
+            }
+        }
+        .onAppear {
+            // Restore any saved choice for the initial step
+            if let saved = choiceMemory[engine.currentStep.id] {
+                selectedChoiceID = saved
+            } else {
+                selectedChoiceID = nil
+            }
+            // Speak the initial step if audio instructions are enabled
+            if voiceAssistEnabled {
+                speech.speak(speechText)
+            }
+        }
+        .onChange(of: engine.currentStep.id) { _, _ in
+            // Restore previously selected choice for this step, if any
+            if let saved = choiceMemory[engine.currentStep.id] {
+                selectedChoiceID = saved
+            } else {
+                selectedChoiceID = nil
+            }
+            // Speak updated instructions if enabled
+            if voiceAssistEnabled {
+                speech.speak(speechText)
+            }
+            // Optionally follow up with voice control instructions after first Continue
+            if speakVoiceControlAfterContinue {
+                speech.speak(voiceControlInstructionsText)
+                speakVoiceControlAfterContinue = false
+            }
+            // Show completion when reaching the last step
+            if engine.currentStep.id == engine.stepsInOrder.last?.id {
+                showCompletion = true
+            }
+        }
+    }
+    
     enum VisualMode { case infographic, camera }
     @Environment(\.horizontalSizeClass) private var hSize
 
     @ObservedObject var engine: FlowEngine
     @State private var showSections = false
-    @State private var isAligned = false
     @State private var safetyChecks: [Bool] = Array(repeating: false, count: 4)
     @State private var selectedChoiceID: String? = nil
     @State private var choiceMemory: [String: String] = [:]
     @State private var visualMode: VisualMode = .infographic
 
     @State private var cameraEverOpened = false
+    @StateObject private var arSession = ARSessionModel()
     @AppStorage("voiceAssistEnabled") private var voiceAssistEnabled: Bool = false
     @StateObject private var speech = SpeechController()
     @State private var speakVoiceControlAfterContinue = false
     private let voiceControlInstructionsText =
     "Voice help. With Voice Control, you can say: Tap Next, or Tap Back. With VoiceOver, swipe to navigate and double-tap to activate."
-
-    @State private var splitFracRegular: CGFloat = 0.30   // left panel width fraction on iPad
-    @State private var splitFracCompact: CGFloat = 0.28   // top panel height fraction on iPhone
-    @GestureState private var dragDeltaRegular: CGFloat = 0
-    @GestureState private var dragDeltaCompact: CGFloat = 0
-    @State private var regularStopIndex: Int = 1   // 0=0.25, 1=0.50, 2=0.75
-    @State private var compactStopIndex: Int = 1
-
-    private func clamp(_ x: CGFloat, _ a: CGFloat, _ b: CGFloat) -> CGFloat { min(max(x, a), b) }
-
-    private func snap(_ x: CGFloat, presets: [CGFloat]) -> CGFloat {
-        presets.min(by: { abs($0 - x) < abs($1 - x) }) ?? x
-    }
-
-    private let regularPresets: [CGFloat] = [0.25, 0.50, 0.75]
-    private let compactPresets: [CGFloat] = [0.25, 0.50, 0.75]
-
-    private let snapStops: [CGFloat] = [0.25, 0.50, 0.75]
-
-    private func nearestStopIndex(_ x: CGFloat) -> Int {
-        var best = 0
-        var bestDist = CGFloat.greatestFiniteMagnitude
-        for (i, s) in snapStops.enumerated() {
-            let d = abs(s - x)
-            if d < bestDist { bestDist = d; best = i }
-        }
-        return best
-    }
-
+    
     @State private var showARFullScreen = false
+    @State private var showCompletion = false
 
     private var arAvailable: Bool {
     #if targetEnvironment(simulator)
@@ -88,9 +119,6 @@ struct FlowScreen: View {
         }
     }
 
-    private var visualPanelHeight: CGFloat { hSize == .regular ? 280 : 220 }
-    private var visualPanelWidth: CGFloat? { hSize == .regular ? 360 : nil }
-
     private var speechText: String {
         // Make bullets read naturally
         let cleanedBody = engine.currentStep.body
@@ -117,7 +145,7 @@ struct FlowScreen: View {
     }
 
     private var alignmentReady: Bool {
-        engine.currentStep.id != "ft_align" || isAligned
+        engine.currentStep.id != "ft_align" || arSession.isAligned
     }
     
     private var selectedChoice: RescueChoice? {
@@ -147,169 +175,20 @@ struct FlowScreen: View {
         return engine.canGoNext || !engine.currentStep.choices.isEmpty
     }
 
-    var body: some View {
-        GeometryReader { geo in
-            VStack(spacing: 0) {
-                contentArea
-                    .padding(.bottom, 8)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-
-                bottomDock
-                    .padding(.bottom, max(12, geo.safeAreaInsets.bottom))
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 12)
-        .background(Color(uiColor: .systemBackground))
-        .ignoresSafeArea(edges: .bottom)
-        .sheet(isPresented: $showSections) { sectionsSheet }
-        .toolbar {
-            if engine.mode == .deadBattery {
-                ToolbarItem(placement: .automatic) {
-                    Button("Sections") { showSections = true }
-                }
-            }
-        }
-        .onChange(of: engine.currentStep.id) { _, newID in
-            if newID == "ft_safety" { safetyChecks = Array(repeating: false, count: 4) }
-            // Keep AR alignment state across steps; do not reset isAligned here
-            selectedChoiceID = choiceMemory[newID]
-            speech.stop()
-
-            if speakVoiceControlAfterContinue {
-                speakVoiceControlAfterContinue = false
-                speech.speak(voiceControlInstructionsText)
-                return
-            }
-
-            if voiceAssistEnabled {
-                speech.speak(speechText)
-            }
-        }
-        .onAppear {
-            // Always start muted
-            voiceAssistEnabled = false
-            // Ensure no speech is playing when the screen appears
-            speech.stop()
-        }
+    private var panelDividerVertical: some View {
+        Capsule()
+            .fill(Color.black.opacity(0.08))
+            .frame(width: 6)
+            .padding(.vertical, 28)
     }
 
-    private var contentArea: some View {
-        GeometryReader { geo in
-            Group {
-                if hSize == .regular {
-                    let handleW: CGFloat = 28
-                    let spacing: CGFloat = 12
-                    let contentW = geo.size.width - handleW - (spacing * 2)
-                    let base = snapStops[regularStopIndex]
-                    let proposed = clamp(base + (dragDeltaRegular / max(contentW, 1)), 0.25, 0.75)
-                    let liveIndex = nearestStopIndex(proposed)
-                    let frac = snapStops[liveIndex]
-                    let leftW = contentW * frac
-
-                    HStack(alignment: .top, spacing: spacing) {
-                        visualPanel
-                            .frame(width: leftW)
-                            .frame(maxHeight: .infinity)
-
-                        splitHandleHorizontal(totalContentWidth: contentW)
-
-                        stepCard
-                            .frame(maxHeight: .infinity, alignment: .top)
-                    }
-                    .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
-                    .transaction { $0.animation = nil }
-                } else {
-                    let handleH: CGFloat = 22
-                    let spacing: CGFloat = 12
-                    let contentH = geo.size.height - handleH - spacing
-                    let base = snapStops[compactStopIndex]
-                    let proposed = clamp(base + (dragDeltaCompact / max(contentH, 1)), 0.25, 0.75)
-                    let liveIndex = nearestStopIndex(proposed)
-                    let frac = snapStops[liveIndex]
-                    let topH = contentH * frac
-
-                    VStack(spacing: spacing) {
-                        visualPanel
-                            .frame(height: topH)
-                            .frame(maxWidth: 420)
-                            .frame(maxWidth: .infinity, alignment: .center)
-
-                        splitHandleVertical(totalContentHeight: contentH)
-
-                        stepCard
-                            .frame(maxHeight: .infinity, alignment: .top)
-                    }
-                    .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
-                    .transaction { $0.animation = nil }
-                }
-            }
-        }
-    }
-    
-    private func splitHandleHorizontal(totalContentWidth: CGFloat) -> some View {
-        return Color.clear
-            .frame(width: 28)
-            .contentShape(Rectangle())
-            .overlay(
-                ZStack {
-                    Capsule()
-                        .fill(.ultraThinMaterial)
-                        .frame(width: 12, height: 72)
-                        .overlay(Capsule().stroke(Color.black.opacity(0.10), lineWidth: 1))
-
-                    // slit
-                    Capsule()
-                        .fill(Color.black.opacity(0.18))
-                        .frame(width: 3, height: 26)
-                }
-            )
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .updating($dragDeltaRegular) { value, state, _ in
-                        state = value.translation.width
-                    }
-                    .onEnded { value in
-                        let base = snapStops[regularStopIndex]
-                        let proposed = clamp(base + value.translation.width / max(totalContentWidth, 1), 0.25, 0.75)
-                        let idx = nearestStopIndex(proposed)
-                        withAnimation(.snappy) { regularStopIndex = idx }
-                    }
-            )
+    private var panelDividerHorizontal: some View {
+        Capsule()
+            .fill(Color.black.opacity(0.08))
+            .frame(height: 6)
+            .padding(.horizontal, 28)
     }
 
-    private func splitHandleVertical(totalContentHeight: CGFloat) -> some View {
-        return Color.clear
-            .frame(height: 22)
-            .contentShape(Rectangle())
-            .overlay(
-                ZStack {
-                    Capsule()
-                        .fill(.ultraThinMaterial)
-                        .frame(width: 72, height: 12)
-                        .overlay(Capsule().stroke(Color.black.opacity(0.10), lineWidth: 1))
-
-                    // slit
-                    Capsule()
-                        .fill(Color.black.opacity(0.18))
-                        .frame(width: 26, height: 3)
-                }
-            )
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .updating($dragDeltaCompact) { value, state, _ in
-                        state = value.translation.height
-                    }
-                    .onEnded { value in
-                        let base = snapStops[compactStopIndex]
-                        let proposed = clamp(base + value.translation.height / max(totalContentHeight, 1), 0.25, 0.75)
-                        let idx = nearestStopIndex(proposed)
-                        withAnimation(.snappy) { compactStopIndex = idx }
-                    }
-            )
-    }
-    
     private var sectionsSheet: some View {
         NavigationStack {
             List {
@@ -341,18 +220,14 @@ struct FlowScreen: View {
             .padding(.vertical, 6)
             .background(Color.accentColor, in: Capsule())
             .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 1))
-            .shadow(color: Color.black.opacity(0.12), radius: 6, x: 0, y: 2)
+            .rrShadow()
     }
 
     private var audioInstructionsPill: some View {
         Button {
-            // Always override any current speech first
             speech.stop()
-            // Toggle mute state
             voiceAssistEnabled.toggle()
-            // Announce the new status
-            let phrase = voiceAssistEnabled ? "Audio instructions on" : "Audio instructions off"
-            speech.speak(phrase)
+            speech.speak(voiceAssistEnabled ? "Audio instructions on" : "Audio instructions off")
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: voiceAssistEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill")
@@ -362,11 +237,10 @@ struct FlowScreen: View {
             .foregroundStyle(.white)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(Color.black.opacity(0.55), in: Capsule())
+            .background(voiceAssistEnabled ? Color.accentColor : Color.gray.opacity(0.65), in: Capsule())
+            .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 1))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Audio instructions")
-        .accessibilityHint("Toggles automatic voice instructions and announces status")
     }
 
     private var bottomDock: some View {
@@ -384,11 +258,17 @@ struct FlowScreen: View {
                     currentStepID: engine.currentStep.id,
                     mode: engine.mode
                 )
-                .padding(.top, 10)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Color(uiColor: .secondarySystemBackground), in: Capsule())
-                .overlay(Capsule().stroke(Color.black.opacity(0.04), lineWidth: 1))
+                .background(alignment: .center) {
+                    Capsule()
+                        .fill(Color(uiColor: .secondarySystemBackground))
+                        .offset(y: 2)
+                }
+                .overlay(
+                    Capsule()
+                        .stroke(Color.black.opacity(0.04), lineWidth: 1)
+                        .offset(y: 2)
+                )
+                .rrShadow()
                 Spacer(minLength: 0)
             }
         }
@@ -402,11 +282,17 @@ struct FlowScreen: View {
     private var bottomContinueRow: some View {
         HStack {
             Spacer(minLength: 0)
-            Button("Continue") { handleNext() }
-                .accessibilityHint("Start the guided steps")
-                .buttonStyle(RRPrimaryPillButtonStyle())
-                .frame(width: 220, height: 48)
-                .disabled(!firstContinueEnabled)
+            Button {
+                handleNext()
+            } label: {
+                Text(firstContinueEnabled ? "Continue" : "Complete checklist to continue")
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+            }
+            .accessibilityHint("Start the guided steps")
+            .buttonStyle(RRPrimaryPillButtonStyle())
+            .frame(width: 320, height: 48)
+            .disabled(!firstContinueEnabled)
             Spacer(minLength: 0)
         }
     }
@@ -446,11 +332,7 @@ struct FlowScreen: View {
     private var visualPanel: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(Color(uiColor: .secondarySystemBackground))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .stroke(Color.black.opacity(0.04), lineWidth: 1)
-                )
+                .fill(Color.black.opacity(0.92))
 
             ZStack {
                 // Infographic layer (always available)
@@ -467,8 +349,8 @@ struct FlowScreen: View {
                     }
                 }
                 .scaledToFit()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(20)
+                .scaleEffect(0.6)
+                .padding(14)
                 .opacity(visualMode == .infographic ? 1 : 0)
 
                 if cameraEverOpened || visualMode == .camera {
@@ -476,7 +358,7 @@ struct FlowScreen: View {
     #if targetEnvironment(simulator)
                         ARUnavailableInlineView()
     #else
-                        ARViewContainer(currentStepID: engine.currentStep.id, isAligned: $isAligned)
+                        ARViewContainer(currentStepID: engine.currentStep.id, sessionModel: arSession)
     #endif
                     }
                     .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
@@ -497,13 +379,29 @@ struct FlowScreen: View {
                     .accessibilityLabel("Open camera fullscreen")
                 }
             }
+            .overlay(alignment: .topLeading) {
+                if visualMode == .camera, arSession.hasAnchor {
+                    Button { arSession.reset() } label: {
+                        Image(systemName: "arrow.counterclockwise")
+                            .font(.system(size: 14, weight: .semibold))
+                            .frame(width: 36, height: 36)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(10)
+                    .accessibilityLabel("Reset alignment")
+                }
+            }
             .fullScreenCover(isPresented: $showARFullScreen) {
-                ARFullScreenView(currentStepID: engine.currentStep.id, isAligned: $isAligned)
+                ARFullScreenView(currentStepID: engine.currentStep.id, sessionModel: arSession)
             }
         }
         .overlay(alignment: .bottom) {
-            visualModeToggle.padding(12)
+            visualModeToggle
+                .padding(12)
+                .offset(y: -20)
         }
+        .rrShadow()
     }
 
     private var visualModeToggle: some View {
@@ -515,6 +413,8 @@ struct FlowScreen: View {
         .padding(4)
         .background(.ultraThinMaterial, in: Capsule())
         .overlay(Capsule().stroke(Color.black.opacity(0.04), lineWidth: 1))
+        .scaleEffect(1.5)
+        .rrShadow()
     }
 
     private func toggleButton(_ mode: VisualMode, system: String, label: String) -> some View {
@@ -530,18 +430,11 @@ struct FlowScreen: View {
     }
 
     private var stepCard: some View {
-        ZStack(alignment: .topTrailing) {
-            stepCardContent
-
-            HStack(spacing: 8) {
-                audioInstructionsPill
-                stepPill
-            }
-            .padding(12)
-        }
-        .padding()
-        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(Color.black.opacity(0.04), lineWidth: 1))
+        stepCardContent
+            .padding()
+            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(Color.black.opacity(0.04), lineWidth: 1))
+            .rrShadow()
     }
 
     private var listenPrimaryButton: some View {
@@ -568,10 +461,15 @@ struct FlowScreen: View {
     private var stepCardContent: some View {
         VStack(alignment: .leading, spacing: 12) {
             // Unified header across all steps
-            Text(engine.currentStep.title)
-                .font(.title3.weight(.semibold))
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(engine.currentStep.title)
+                    .font(.title3.weight(.semibold))
+                Spacer()
+                audioInstructionsPill
+                stepPill
+            }
 
-            if !engine.currentStep.safety.isEmpty {
+            if engine.currentStep.id != "ft_safety", !engine.currentStep.safety.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(engine.currentStep.safety) { flag in
@@ -676,7 +574,49 @@ struct FlowScreen: View {
         }
     }
 
+    private var contentArea: some View {
+        GeometryReader { geo in
+            Group {
+                if hSize == .regular {
+                    // iPad / landscape (and iPad portrait): 50/50 side-by-side
+                    let spacing: CGFloat = 12
+                    let leftW = (geo.size.width - spacing) / 2
 
+                    HStack(alignment: .top, spacing: spacing) {
+                        visualPanel
+                            .frame(width: leftW)
+                            .frame(maxHeight: .infinity)
+
+                        panelDividerVertical
+
+                        stepCard
+                            .frame(maxWidth: .infinity)
+                            .frame(maxHeight: .infinity, alignment: .top)
+                    }
+                    .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
+
+                } else {
+                    // iPhone / compact: 50/50 stacked
+                    let spacing: CGFloat = 12
+                    let topH = (geo.size.height - spacing) / 2
+
+                    VStack(spacing: spacing) {
+                        visualPanel
+                            .frame(height: topH)
+                            .frame(maxWidth: 420)
+                            .frame(maxWidth: .infinity, alignment: .center)
+
+                        panelDividerHorizontal
+
+                        stepCard
+                            .frame(maxHeight: .infinity, alignment: .top)
+                    }
+                    .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
+                }
+            }
+            .transaction { $0.animation = nil }
+        }
+    }
 }
 
 private struct RRPrimaryPillButtonStyle: ButtonStyle {
@@ -690,6 +630,7 @@ private struct RRPrimaryPillButtonStyle: ButtonStyle {
             .background(
                 Capsule().fill(isEnabled ? Color.accentColor : Color.gray.opacity(0.35))
             )
+            .rrShadow()
             .opacity(configuration.isPressed ? 0.85 : 1.0)
     }
 }
@@ -762,7 +703,7 @@ private struct SafetyAdvisoryCard: View {
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.red.opacity(0.85))
             VStack(alignment: .leading, spacing: 2) {
                 Text("Safety advisory")
                     .font(.subheadline.weight(.semibold))
@@ -794,7 +735,7 @@ private struct VoiceAssistCard: View {
                     .foregroundStyle(.secondary)
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Voice + AR help")
+                    Text("Voice Assistant")
                         .font(.subheadline.weight(.semibold))
 
                     Text("Voice instructions and AR positioning are available for this issue. Use VoiceOver to read steps aloud. With Voice Control, say “Tap Next” or “Tap Back”.")
@@ -816,7 +757,7 @@ private struct VoiceAssistCard: View {
             )
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Voice and AR help. Tap to hear instructions. Use VoiceOver to read steps aloud. With Voice Control, say Tap Next or Tap Back.")
+        .accessibilityLabel("Voice Assistant. Tap to hear instructions. Use VoiceOver to read steps aloud. With Voice Control, say Tap Next or Tap Back.")
         .accessibilityHint("Plays the current step instructions.")
     }
 }
@@ -837,6 +778,45 @@ private struct ARUnavailableInlineView: View {
                     .foregroundStyle(.white.opacity(0.75))
             }
             .padding(16)
+        }
+    }
+}
+
+private struct CompletionSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let onRestart: () -> Void
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 14) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 44, weight: .semibold))
+                    .foregroundStyle(.green)
+
+                Text("Steps complete")
+                    .font(.title3.weight(.semibold))
+
+                Text("You can review Articles for aftercare and safety notes, or restart the guide.")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+
+                Button("Restart guide") {
+                    onRestart()
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+
+                Spacer()
+            }
+            .padding(.top, 24)
+            .navigationTitle("Done")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Close") { dismiss() }
+                }
+            }
         }
     }
 }
