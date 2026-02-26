@@ -34,6 +34,13 @@ struct FlowScreen: View {
                 }
             )
         }
+        .sheet(isPresented: $showLugSetup) {
+            LugSetupSheet(selected: $pendingLugCount) { n in
+                lugCount = n
+                arSession.confirmLugSetup(n)
+                arSession.lock()
+            }
+        }
         .onAppear {
             // Restore any saved choice for the initial step
             if let saved = choiceMemory[engine.currentStep.id] {
@@ -85,6 +92,9 @@ struct FlowScreen: View {
     "Voice help. With Voice Control, you can say: Tap Next, or Tap Back. With VoiceOver, swipe to navigate and double-tap to activate."
     
     @State private var showCompletion = false
+    @State private var showLugSetup = false
+    @State private var pendingLugCount: Int = 5
+    @State private var showARLugSetup = false
 
     private let flatTireHeroMap: [String: String] = [
         "ft_safety": "hero_safety",
@@ -258,93 +268,13 @@ struct FlowScreen: View {
         .accessibilityHint("Plays voice control instructions and toggles state")
     }
 
-    private var bottomDock: some View {
-        VStack(spacing: 10) {
-            if engine.canGoBack {
-                bottomNavRow
-            } else {
-                bottomContinueRow
-            }
-
-            HStack {
-                Spacer(minLength: 0)
-                StepProgressIndicator(
-                    steps: engine.stepsInOrder,
-                    currentStepID: engine.currentStep.id,
-                    mode: engine.mode
-                )
-                .background(alignment: .center) {
-                    Capsule()
-                        .fill(Color(uiColor: .secondarySystemBackground))
-                        .offset(y: 2)
-                }
-                .overlay(
-                    Capsule()
-                        .stroke(Color.black.opacity(0.04), lineWidth: 1)
-                        .offset(y: 2)
-                )
-                .rrShadow()
-                Spacer(minLength: 0)
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 10)
-        .padding(.bottom, 12)
-        .frame(maxWidth: .infinity)
-        .background(Color(uiColor: .systemBackground))
-    }
-    
-    private var bottomContinueRow: some View {
-        HStack {
-            Spacer(minLength: 0)
-            Button {
-                handleNext()
-            } label: {
-                Text(firstContinueEnabled ? "Continue" : "Complete checklist to continue")
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-            }
-            .accessibilityHint("Start the guided steps")
-            .buttonStyle(RRPrimaryPillButtonStyle())
-            .frame(width: 320, height: 48)
-            .disabled(!firstContinueEnabled)
-            Spacer(minLength: 0)
-        }
-    }
-    
-    private var bottomNavRow: some View {
-        HStack(spacing: 12) {
-            Button("Back") { engine.goBack() }
-                .accessibilityHint("Go to the previous step")
-                .buttonStyle(RRSecondaryPillButtonStyle())
-                .frame(width: 160, height: 48)
-                .disabled(!engine.canGoBack)
-
-            Button("Next") { handleNext() }
-                .accessibilityHint("Go to the next step")
-                .buttonStyle(RRPrimaryPillButtonStyle())
-                .frame(width: 160, height: 48)
-                .disabled(!canTapNext)
-        }
-        .frame(maxWidth: .infinity, alignment: .center)
-    }
-
-    private func handleNext() {
-        // If this step has choices, Next takes the selected one, or defaults to the first.
-        if !engine.currentStep.choices.isEmpty {
-            let choice = selectedChoice ?? engine.currentStep.choices.first!
-            engine.select(choice)
-            return
-        }
-
-        engine.goNext()
-    }
-
-
     private var arTopText: String? {
         if visualMode != .camera { return nil }
         if let s = arSession.statusText { return s }
         if !arSession.hasAnchor { return "Tap a flat surface (floor or wall) near the tire to place the guide" }
+        if arSession.hasAnchor && !arSession.lugSetupConfirmed {
+            return "Tap Continue to set lug count (5–8)"
+        }
         if engine.currentStep.id == "ft_loosen" {
             return "Tap each lug marker after loosening ¼–½ turn (do not remove)"
         }
@@ -374,6 +304,59 @@ struct FlowScreen: View {
         .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 1))
     }
 
+    private var shouldShowARLugContinue: Bool {
+        visualMode == .camera &&
+        arSession.hasAnchor &&
+        !arSession.lugSetupConfirmed &&
+        !showARLugSetup
+    }
+
+    private var arLugContinuePill: some View {
+        Button { showARLugSetup = true } label: {
+            Text("Continue")
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 12)
+                .background(Color.accentColor, in: Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var arLugSliderPill: some View {
+        HStack(spacing: 12) {
+            Text("Lug nuts")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Text("\(lugCount)")
+                .font(.subheadline.weight(.semibold))
+                .frame(width: 22, alignment: .trailing)
+
+            Slider(
+                value: Binding(
+                    get: { Double(lugCount) },
+                    set: { lugCount = Int($0.rounded()) }
+                ),
+                in: 5...8,
+                step: 1,
+                onEditingChanged: { editing in
+                    if !editing {
+                        // “Confirm” happens automatically on release (no confirm button)
+                        arSession.confirmLugSetup(lugCount)
+                        showARLugSetup = false
+                    }
+                }
+            )
+            .frame(width: 170)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Color(uiColor: .secondarySystemBackground), in: Capsule())
+        .overlay(Capsule().stroke(Color.black.opacity(0.10), lineWidth: 1))
+        .rrShadow()
+    }
+    
     private var visualPanel: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
@@ -437,11 +420,19 @@ struct FlowScreen: View {
                         .padding(10)
                 }
             }
-        }
-        .overlay(alignment: .bottom) {
-            visualModeToggle
+            .overlay(alignment: .bottom) {
+                VStack(spacing: 10) {
+                    if showARLugSetup {
+                        arLugSliderPill
+                    } else if shouldShowARLugContinue {
+                        arLugContinuePill
+                    }
+
+                    visualModeToggle
+                        .offset(y: -20)
+                }
                 .padding(12)
-                .offset(y: -20)
+            }
         }
         .overlay(alignment: .top) {
             if let t = arTopText {
@@ -516,9 +507,6 @@ struct FlowScreen: View {
                 voiceControlPill
                 audioInstructionsPill
                 stepPill
-            }
-            if engine.mode == .flatTire, ["ft_tools", "ft_loosen"].contains(engine.currentStep.id) {
-                LugCountSelector(lugCount: $lugCount)
             }
 
             if engine.currentStep.id != "ft_safety", !engine.currentStep.safety.isEmpty {
@@ -668,6 +656,88 @@ struct FlowScreen: View {
             }
             .transaction { $0.animation = nil }
         }
+    }
+
+    private var bottomDock: some View {
+        VStack(spacing: 10) {
+            if engine.canGoBack {
+                bottomNavRow
+            } else {
+                bottomContinueRow
+            }
+
+            HStack {
+                Spacer(minLength: 0)
+                StepProgressIndicator(
+                    steps: engine.stepsInOrder,
+                    currentStepID: engine.currentStep.id,
+                    mode: engine.mode
+                )
+                .background(alignment: .center) {
+                    Capsule()
+                        .fill(Color(uiColor: .secondarySystemBackground))
+                        .offset(y: 2)
+                }
+                .overlay(
+                    Capsule()
+                        .stroke(Color.black.opacity(0.04), lineWidth: 1)
+                        .offset(y: 2)
+                )
+                .rrShadow()
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 12)
+        .frame(maxWidth: .infinity)
+        .background(Color(uiColor: .systemBackground))
+    }
+    
+    private var bottomContinueRow: some View {
+        HStack {
+            Spacer(minLength: 0)
+            Button {
+                handleNext()
+            } label: {
+                Text(firstContinueEnabled ? "Continue" : "Complete checklist to continue")
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+            }
+            .accessibilityHint("Start the guided steps")
+            .buttonStyle(RRPrimaryPillButtonStyle())
+            .frame(width: 320, height: 48)
+            .disabled(!firstContinueEnabled)
+            Spacer(minLength: 0)
+        }
+    }
+    
+    private var bottomNavRow: some View {
+        HStack(spacing: 12) {
+            Button("Back") { engine.goBack() }
+                .accessibilityHint("Go to the previous step")
+                .buttonStyle(RRSecondaryPillButtonStyle())
+                .frame(width: 160, height: 48)
+                .disabled(!engine.canGoBack)
+
+            Button("Next") { handleNext() }
+                .accessibilityHint("Go to the next step")
+                .buttonStyle(RRPrimaryPillButtonStyle())
+                .frame(width: 160, height: 48)
+                .disabled(!canTapNext)
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    private func handleNext() {
+        // If this step has choices, Next takes the selected one, or defaults to the first.
+        if !engine.currentStep.choices.isEmpty {
+            let choice = selectedChoice ?? engine.currentStep.choices.first!
+            engine.select(choice)
+            return
+        }
+
+        engine.goNext()
     }
 }
 
@@ -909,6 +979,51 @@ private struct LugCountSelector: View {
                 }
             }
             .pickerStyle(.segmented)
+        }
+    }
+}
+
+private struct LugSetupSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var selected: Int
+    let onConfirm: (Int) -> Void
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Enter the amount of lug nuts")
+                    .font(.title3.weight(.semibold))
+
+                Text("Selected: \(selected)")
+                    .font(.headline)
+
+                Slider(
+                    value: Binding(
+                        get: { Double(selected) },
+                        set: { selected = Int($0.rounded()) }
+                    ),
+                    in: 5...8,
+                    step: 1
+                )
+
+                Button {
+                    onConfirm(selected)
+                    dismiss()
+                } label: {
+                    Text("Confirm")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+
+                Spacer()
+            }
+            .padding(20)
+            .navigationTitle("Lug setup")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
         }
     }
 }

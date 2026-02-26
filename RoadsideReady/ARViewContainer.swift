@@ -2,6 +2,8 @@ import SwiftUI
 import UIKit
 import RealityKit
 import ARKit
+import Foundation
+import simd
 
 struct ARViewContainer: UIViewRepresentable {
     let currentStepID: String
@@ -50,12 +52,17 @@ struct ARViewContainer: UIViewRepresentable {
 
         private var lastLocked: Bool = false
         private var lastLoosenedKey: String = ""
+        private var lastTightenedKey: String = ""
+        private var lastActiveKey: String = ""
+        private var lastSetupConfirmed: Bool = false
         private var lastResetRequest: Int = 0
         private var awaitingReadyAfterReset: Bool = false
         private let repositionMaxMeters: Float = 0.75
 
         private var ringEntity: ModelEntity?
         private var lugEntities: [Int: ModelEntity] = [:]
+
+        private let tightenSteps: Set<String> = ["ft_mount", "ft_lower", "ft_aftercare"]
 
         #if DEBUG
         private var planeAxisAnchors: [AnchorEntity] = []
@@ -66,10 +73,18 @@ struct ARViewContainer: UIViewRepresentable {
 
         // Cached meshes (avoid reallocation)
         private let ringMesh = MeshResource.generateCylinder(height: 0.006, radius: 0.22)
-        private let lugMesh  = MeshResource.generateSphere(radius: 0.014)
+
+        private let lugHeadMesh: MeshResource
+        private let lugStemMesh: MeshResource
+
+        private let matBlue = SimpleMaterial(color: .systemBlue, isMetallic: false)
+        private let matRed = SimpleMaterial(color: .systemRed, isMetallic: false)
+        private let matGreen = SimpleMaterial(color: .systemGreen, isMetallic: false)
 
         init(sessionModel: ARSessionModel) {
             self.sessionModel = sessionModel
+            self.lugHeadMesh = Coordinator.makeHexPrismMesh(height: 0.010, radius: 0.015)
+            self.lugStemMesh = MeshResource.generateCylinder(height: 0.014, radius: 0.007)
         }
 
         func attach(_ arView: ARView) {
@@ -93,18 +108,33 @@ struct ARViewContainer: UIViewRepresentable {
             // Build a stable key for loosened set to detect changes cheaply
             let loosenedKey = sessionModel.loosenedLugs.sorted().map(String.init).joined(separator: ",")
 
+            let tightenedKey = sessionModel.tightenedLugs.sorted().map(String.init).joined(separator: ",")
+            let activeKey = sessionModel.activeLugIndex.map(String.init) ?? "-"
+            let setup = sessionModel.lugSetupConfirmed
+
             // If nothing relevant changed, do nothing (prevents CPU spikes)
             if stepID == lastStepID,
                lugCount == lastLugCount,
                sessionModel.isLocked == lastLocked,
-               loosenedKey == lastLoosenedKey {
+               loosenedKey == lastLoosenedKey,
+               tightenedKey == lastTightenedKey,
+               activeKey == lastActiveKey,
+               setup == lastSetupConfirmed {
                 return
+            }
+
+            let enteringTighten = (stepID != lastStepID) && tightenSteps.contains(stepID) && !tightenSteps.contains(lastStepID)
+            if enteringTighten, sessionModel.lugSetupConfirmed {
+                self.sessionModel.beginTightenSequence()
             }
 
             lastStepID = stepID
             lastLugCount = lugCount
             lastLocked = sessionModel.isLocked
             lastLoosenedKey = loosenedKey
+            lastTightenedKey = tightenedKey
+            lastActiveKey = activeKey
+            lastSetupConfirmed = setup
 
             renderReuse()
         }
@@ -118,18 +148,23 @@ struct ARViewContainer: UIViewRepresentable {
             let location = sender.location(in: arView)
             showTapFeedback(in: arView, at: location)
 
-            // A) Lug taps (only on loosen step AND locked)
-            if lastStepID == "ft_loosen",
-               sessionModel.isLocked,
+            // A) Lug taps (loosen or tighten steps, only when locked and after setup)
+            if sessionModel.isLocked,
+               sessionModel.lugSetupConfirmed,
                let entity = arView.entity(at: location),
                entity.name.hasPrefix("rr_lug_"),
                let idx = Int(entity.name.replacingOccurrences(of: "rr_lug_", with: "")) {
-                Task { @MainActor in self.sessionModel.toggleLoosened(idx) }
+
+                if lastStepID == "ft_loosen" {
+                    self.sessionModel.toggleLoosened(idx)
+                } else if tightenSteps.contains(lastStepID) {
+                    self.sessionModel.handleTightenTap(idx)
+                }
                 renderReuse()
                 return
             }
 
-            // B) If locked, don't allow reposition
+            // B) If already locked, do not allow reposition
             if sessionModel.isLocked {
                 Task { @MainActor in
                     self.sessionModel.setStatus("Locked. Use Redo to move.")
@@ -159,11 +194,10 @@ struct ARViewContainer: UIViewRepresentable {
             }
 
             let transform = hit.worldTransform
-            let shouldLock = self.lastStepID == "ft_loosen"
             Task { @MainActor in
-                self.sessionModel.setAnchor(transform)   // sets isLocked=false
+                self.sessionModel.setAnchor(transform)
                 self.sessionModel.resetLugs()
-                if shouldLock { self.sessionModel.lock() }
+                self.sessionModel.lock() // ALWAYS lock after first placement
             }
 
             createOrUpdateAnchor(transform)
@@ -337,7 +371,7 @@ struct ARViewContainer: UIViewRepresentable {
 
             // Ensure ring exists once
             if ringEntity == nil {
-                let color = UIColor.systemBlue.withAlphaComponent(0.30)
+                let color = UIColor.systemGray.withAlphaComponent(0.25)
                 let ring = ModelEntity(mesh: ringMesh, materials: [SimpleMaterial(color: color, isMetallic: false)])
                 ring.name = "rr_ring"
                 ring.position = [0, 0.012, 0]
@@ -345,8 +379,8 @@ struct ARViewContainer: UIViewRepresentable {
                 anchor.addChild(ring)
             }
 
-            // Lugs only visible on ft_loosen AND locked
-            let showLugs = (lastStepID == "ft_loosen" && sessionModel.isLocked)
+            // Lugs visible after setup is confirmed AND locked
+            let showLugs = (sessionModel.lugSetupConfirmed && sessionModel.isLocked)
 
             if !showLugs {
                 // Hide (don’t remove) lug entities
@@ -358,12 +392,18 @@ struct ARViewContainer: UIViewRepresentable {
             let positions = lugPositions(count: lastLugCount, radius: 0.13)
             for i in 0..<lastLugCount {
                 if lugEntities[i] == nil {
-                    let lug = ModelEntity(mesh: lugMesh, materials: [SimpleMaterial(color: .systemOrange, isMetallic: false)])
-                    lug.name = "rr_lug_\(i)"
-                    lug.components.set(InputTargetComponent())
-                    lug.generateCollisionShapes(recursive: true)   // do this ONCE
-                    lugEntities[i] = lug
-                    anchor.addChild(lug)
+                    let head = ModelEntity(mesh: lugHeadMesh, materials: [matBlue])
+                    head.name = "rr_lug_\(i)"
+                    head.components.set(InputTargetComponent())
+                    head.generateCollisionShapes(recursive: false)   // collision on head only
+
+                    let stem = ModelEntity(mesh: lugStemMesh, materials: [matBlue])
+                    stem.name = "rr_lug_stem"
+                    stem.position = [0, -0.010, 0] // place stem below the head
+                    head.addChild(stem)
+
+                    lugEntities[i] = head
+                    anchor.addChild(head)
                 }
             }
 
@@ -373,8 +413,21 @@ struct ARViewContainer: UIViewRepresentable {
                 lug.isEnabled = true
                 if i < positions.count { lug.position = positions[i] }
 
-                let isOn = sessionModel.loosenedLugs.contains(i)
-                lug.model?.materials = [SimpleMaterial(color: isOn ? .systemGreen : .systemOrange, isMetallic: false)]
+                let mat: SimpleMaterial
+                if lastStepID == "ft_loosen" {
+                    mat = sessionModel.loosenedLugs.contains(i) ? matGreen : matBlue
+                } else if tightenSteps.contains(lastStepID) {
+                    if i == sessionModel.activeLugIndex { mat = matRed }
+                    else if sessionModel.tightenedLugs.contains(i) { mat = matGreen }
+                    else { mat = matBlue }
+                } else {
+                    mat = matBlue
+                }
+
+                lug.model?.materials = [mat]
+                if let stem = lug.findEntity(named: "rr_lug_stem") as? ModelEntity {
+                    stem.model?.materials = [mat]
+                }
             }
 
             // Hide any extras from previous larger lugCount
@@ -389,6 +442,74 @@ struct ARViewContainer: UIViewRepresentable {
                 let angle = Float(i) * (2 * .pi / Float(count))
                 // x/z lie in the surface plane; y is surface normal
                 return [radius * cos(angle), 0.016, radius * sin(angle)]
+            }
+        }
+
+        private static func makeHexPrismMesh(height: Float, radius: Float) -> MeshResource {
+            var desc = MeshDescriptor()
+
+            let h = height / 2
+            var positions: [SIMD3<Float>] = []
+            var normals: [SIMD3<Float>] = []
+
+            // 0..5 bottom ring, 6..11 top ring
+            for i in 0..<6 {
+                let a = Float(i) * (2 * .pi / 6)
+                let x = radius * cos(a)
+                let z = radius * sin(a)
+                positions.append([x, -h, z])
+                normals.append(simd_normalize([x, 0, z])) // outward
+            }
+            for i in 0..<6 {
+                let a = Float(i) * (2 * .pi / 6)
+                let x = radius * cos(a)
+                let z = radius * sin(a)
+                positions.append([x,  h, z])
+                normals.append(simd_normalize([x, 0, z])) // outward
+            }
+
+            let bottomCenter: UInt32 = 12
+            let topCenter: UInt32 = 13
+            positions.append([0, -h, 0]); normals.append([0, -1, 0])
+            positions.append([0,  h, 0]); normals.append([0,  1, 0])
+
+            desc.positions = MeshBuffers.Positions(positions)
+            desc.normals   = MeshBuffers.Normals(normals)
+
+            var idx: [UInt32] = []
+
+            // Sides (6 quads => 12 triangles)
+            for i: UInt32 in 0..<6 {
+                let b0 = i
+                let b1 = (i + 1) % 6
+                let t0 = i + 6
+                let t1 = ((i + 1) % 6) + 6
+                idx += [b0, t0, t1,  b0, t1, b1]
+            }
+
+            // Bottom cap (CCW when viewed from below)
+            for i: UInt32 in 0..<6 {
+                let b0 = i
+                let b1 = (i + 1) % 6
+                idx += [bottomCenter, b0, b1]
+            }
+
+            // Top cap (CCW when viewed from above)
+            for i: UInt32 in 0..<6 {
+                let t0 = i + 6
+                let t1 = ((i + 1) % 6) + 6
+                idx += [topCenter, t1, t0]
+            }
+
+            desc.primitives = .triangles(idx)
+
+            do {
+                return try MeshResource.generate(from: [desc])
+            } catch {
+                #if DEBUG
+                print("Hex mesh gen failed:", error)
+                #endif
+                return .generateCylinder(height: height, radius: radius)
             }
         }
 
@@ -417,5 +538,4 @@ struct ARViewContainer: UIViewRepresentable {
         }
     }
 }
-
 
