@@ -83,6 +83,7 @@ struct FlowScreen: View {
     @State private var visualMode: VisualMode = .infographic
 
     @State private var cameraEverOpened = false
+    @State private var showARLugSetup = false
     @StateObject private var arSession = ARSessionModel()
     @AppStorage("lugCount") private var lugCount: Int = 5
     @AppStorage("voiceAssistEnabled") private var voiceAssistEnabled: Bool = false
@@ -94,7 +95,6 @@ struct FlowScreen: View {
     @State private var showCompletion = false
     @State private var showLugSetup = false
     @State private var pendingLugCount: Int = 5
-    @State private var showARLugSetup = false
 
     private let flatTireHeroMap: [String: String] = [
         "ft_safety": "hero_safety",
@@ -272,9 +272,7 @@ struct FlowScreen: View {
         if visualMode != .camera { return nil }
         if let s = arSession.statusText { return s }
         if !arSession.hasAnchor { return "Tap a flat surface (floor or wall) near the tire to place the guide" }
-        if arSession.hasAnchor && !arSession.lugSetupConfirmed {
-            return "Tap Continue to set lug count (5–8)"
-        }
+        if !arSession.lugSetupConfirmed { return "Tap Continue to set lug count (5–8)" }
         if engine.currentStep.id == "ft_loosen" {
             return "Tap each lug marker after loosening ¼–½ turn (do not remove)"
         }
@@ -304,6 +302,7 @@ struct FlowScreen: View {
         .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 1))
     }
 
+    // MARK: - AR-only lug setup UI (does NOT affect flow Continue/Next)
     private var shouldShowARLugContinue: Bool {
         visualMode == .camera &&
         arSession.hasAnchor &&
@@ -325,7 +324,7 @@ struct FlowScreen: View {
 
     private var arLugSliderPill: some View {
         HStack(spacing: 12) {
-            Text("Lug nuts")
+            Text("Enter lug nuts (5–8)")
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(.secondary)
 
@@ -342,8 +341,7 @@ struct FlowScreen: View {
                 step: 1,
                 onEditingChanged: { editing in
                     if !editing {
-                        // “Confirm” happens automatically on release (no confirm button)
-                        arSession.confirmLugSetup(lugCount)
+                        arSession.confirmLugSetup(lugCount)   // auto-confirm on release
                         showARLugSetup = false
                     }
                 }
@@ -355,6 +353,22 @@ struct FlowScreen: View {
         .background(Color(uiColor: .secondarySystemBackground), in: Capsule())
         .overlay(Capsule().stroke(Color.black.opacity(0.10), lineWidth: 1))
         .rrShadow()
+    }
+
+    private var showARLugEntry: Bool {
+        visualMode == .camera && arSession.hasAnchor && arSession.isLocked && !showARLugSetup
+    }
+
+    private var arLugEntryPill: some View {
+        Button { showARLugSetup = true } label: {
+            Text(arSession.lugSetupConfirmed ? "Lugs: \(lugCount)  •  Edit" : "Continue")
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 12)
+                .background(Color.accentColor, in: Capsule())
+        }
+        .buttonStyle(.plain)
     }
     
     private var visualPanel: some View {
@@ -386,7 +400,12 @@ struct FlowScreen: View {
                     #if targetEnvironment(simulator)
                         ARUnavailableInlineView()
                     #else
-                        ARViewContainer(currentStepID: engine.currentStep.id, lugCount: lugCount, sessionModel: arSession)
+                        ARViewContainer(
+                            currentStepID: engine.currentStep.id,
+                            lugCount: lugCount,
+                            sessionModel: arSession,
+                            isActive: (visualMode == .camera)
+                        )
                     #endif
                     }
                     .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
@@ -421,15 +440,19 @@ struct FlowScreen: View {
                 }
             }
             .overlay(alignment: .bottom) {
-                VStack(spacing: 10) {
+                ZStack(alignment: .bottom) {
+                    // always lowest
+                    visualModeToggle
+                        .padding(.bottom, 10)
+
+                    // always above toggle (so it never blocks it)
                     if showARLugSetup {
                         arLugSliderPill
-                    } else if shouldShowARLugContinue {
-                        arLugContinuePill
+                            .padding(.bottom, 70)
+                    } else if showARLugEntry {
+                        arLugEntryPill
+                            .padding(.bottom, 70)
                     }
-
-                    visualModeToggle
-                        .offset(y: -20)
                 }
                 .padding(12)
             }
@@ -636,9 +659,13 @@ struct FlowScreen: View {
                     .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
 
                 } else {
-                    // iPhone / compact: 50/50 stacked
+                    // iPhone / compact: orientation-aware split
                     let spacing: CGFloat = 12
-                    let topH = (geo.size.height - spacing) / 2
+                    let isLandscape = geo.size.width > geo.size.height
+                    let ratio: CGFloat = isLandscape ? 0.55 : 0.35   // tweak portrait 0.30–0.38 if needed
+
+                    let available = geo.size.height - spacing
+                    let topH = max(180, min(available * ratio, 360))
 
                     VStack(spacing: spacing) {
                         visualPanel
@@ -960,25 +987,6 @@ private struct CompletionSheet: View {
                     Button("Done") { dismiss() }
                 }
             }
-        }
-    }
-}
-
-private struct LugCountSelector: View {
-    @Binding var lugCount: Int
-    private let options = [4, 5, 6, 8]
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Lug nuts")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.secondary)
-
-            Picker("", selection: $lugCount) {
-                ForEach(options, id: \.self) { n in
-                    Text("\(n)").tag(n)
-                }
-            }
-            .pickerStyle(.segmented)
         }
     }
 }

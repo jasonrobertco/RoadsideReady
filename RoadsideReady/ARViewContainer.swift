@@ -2,341 +2,721 @@ import SwiftUI
 import UIKit
 import RealityKit
 import ARKit
-import Foundation
 import simd
 
 struct ARViewContainer: UIViewRepresentable {
     let currentStepID: String
     let lugCount: Int
     @ObservedObject var sessionModel: ARSessionModel
+    let isActive: Bool
+
+    init(currentStepID: String, lugCount: Int, sessionModel: ARSessionModel, isActive: Bool = true) {
+        self.currentStepID = currentStepID
+        self.lugCount = lugCount
+        self.sessionModel = sessionModel
+        self.isActive = isActive
+    }
 
     func makeUIView(context: Context) -> ARView {
         let arView = ARView(frame: .zero)
+        arView.automaticallyConfigureSession = false
 
         let config = ARWorldTrackingConfiguration()
         config.planeDetection = [.horizontal, .vertical]
         config.environmentTexturing = .automatic
         config.isAutoFocusEnabled = true
-        arView.automaticallyConfigureSession = false
-        arView.session.run(config)
-
-        #if DEBUG
-        // arView.debugOptions.insert(.showFeaturePoints)
-        // arView.debugOptions.insert(.showAnchorOrigins)
-        #endif
 
         let tap = UITapGestureRecognizer(target: context.coordinator,
                                          action: #selector(Coordinator.handleTap(_:)))
         arView.addGestureRecognizer(tap)
 
-        context.coordinator.attach(arView)
+        context.coordinator.attach(arView, config: config)
+        context.coordinator.setActive(isActive)
         context.coordinator.update(stepID: currentStepID, lugCount: lugCount)
         return arView
     }
 
     func updateUIView(_ uiView: ARView, context: Context) {
+        context.coordinator.setActive(isActive)
         context.coordinator.update(stepID: currentStepID, lugCount: lugCount)
     }
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(sessionModel: sessionModel)
-    }
+    func makeCoordinator() -> Coordinator { Coordinator(sessionModel: sessionModel) }
 
     final class Coordinator: NSObject, ARSessionDelegate {
         private let sessionModel: ARSessionModel
         weak var arView: ARView?
 
-        private var wheelAnchor: AnchorEntity?
+        private var config: ARWorldTrackingConfiguration?
+        private var sessionRunning: Bool = false
+
+        // Stable AR anchor
+        private var wheelARAnchor: ARAnchor?
+        private var anchorEntity: AnchorEntity?
+
+        // Root under anchor (stays on ground)
+        private var contentRoot: Entity?
+        // Wheel content (moves up when jacked)
+        private var wheelGroup: Entity?
+
+        // Entities
+        private var oldRing: ModelEntity?
+        private var newRing: ModelEntity?
+        private var jackBase: ModelEntity?
+        private var jackLift: ModelEntity?
+        private var jackTop: ModelEntity?
+
+        private var lugEntities: [Int: ModelEntity] = [:]      // head; stem is child
+        private var lugArrowEntities: [Int: Entity] = [:]      // per-lug arrow group
+
+        // Lug state (kept local so reverse is deterministic)
+        private var removedLugs: Set<Int> = []
+
+        // Stage machine (drives reverse animation)
+        private enum Stage: Equatable {
+            case base
+            case loosen
+            case jackPlaced
+            case jackUp
+            case removed
+            case mount
+            case lowered
+        }
+
+        private var stage: Stage = .base
         private var lastStepID: String = ""
-        private var lastLugCount: Int = 5
-
-        private var lastLocked: Bool = false
-        private var lastLoosenedKey: String = ""
-        private var lastTightenedKey: String = ""
-        private var lastActiveKey: String = ""
-        private var lastSetupConfirmed: Bool = false
         private var lastResetRequest: Int = 0
-        private var awaitingReadyAfterReset: Bool = false
-        private let repositionMaxMeters: Float = 0.75
+        private var transitionTask: Task<Void, Never>?
 
-        private var ringEntity: ModelEntity?
-        private var lugEntities: [Int: ModelEntity] = [:]
+        // ---- Geometry tuning (local to anchor plane) ----
+        // Ring annulus
+        private let ringOuterR: Float = 0.22
+        private let ringInnerR: Float = 0.16
+        private let ringHeight: Float = 0.006
 
-        private let tightenSteps: Set<String> = ["ft_mount", "ft_lower", "ft_aftercare"]
+        // Lug pattern radius: inside inner radius
+        private let lugPatternRadius: Float = 0.11
 
-        #if DEBUG
-        private var planeAxisAnchors: [AnchorEntity] = []
-        private var planeAxisIDs: Set<UUID> = []
-        private let maxPlaneAxis: Int = 3
-        private var axesArmed: Bool = true
-        #endif
+        // Lift above surface to avoid flicker
+        private let ringY: Float = 0.030
+        private let lugBaseY: Float = 0.042
 
-        // Cached meshes (avoid reallocation)
-        private let ringMesh = MeshResource.generateCylinder(height: 0.006, radius: 0.22)
+        // Jack + wheel lift (normal is +Y in local frame)
+        private let jackLiftY: Float = 0.08
 
-        private let lugHeadMesh: MeshResource
-        private let lugStemMesh: MeshResource
+        // Loosen: slight radial out + slight turn
+        private let lugLooseRadialOut: Float = 0.015
+        private let lugLooseRotation: Float = .pi / 10   // ~18°
 
-        private let matBlue = SimpleMaterial(color: .systemBlue, isMetallic: false)
-        private let matRed = SimpleMaterial(color: .systemRed, isMetallic: false)
-        private let matGreen = SimpleMaterial(color: .systemGreen, isMetallic: false)
+        // Remove: out along normal
+        private let lugRemovedNormalOut: Float = 0.12
+
+        // Arrow travel: ~1 ft = 0.30m
+        private let arrowTravel: Float = 0.30
+
+        // ---- Cached meshes/materials (low power) ----
+        private lazy var ringMesh: MeshResource =
+            Self.makeAnnulusMesh(height: ringHeight, inner: ringInnerR, outer: ringOuterR, segments: 48)
+
+        private let headHeight: Float = 0.010
+        private let headRadius: Float = 0.015
+        private let stemHeight: Float = 0.030   // 3× head height
+        private let stemRadius: Float = 0.0065
+
+        private lazy var lugHeadMesh = Self.makeHexPrismMesh(height: headHeight, radius: headRadius)
+        private lazy var lugStemMesh = MeshResource.generateCylinder(height: stemHeight, radius: stemRadius)
+
+        private let arrowStemMesh = MeshResource.generateCylinder(height: 0.10, radius: 0.008)
+        private let arrowHeadMesh = MeshResource.generateCone(height: 0.05, radius: 0.02)
+
+        private let jackBaseMesh = MeshResource.generateBox(size: [0.10, 0.02, 0.10])
+        private let jackLiftMesh = MeshResource.generateBox(size: [0.04, 0.06, 0.04])
+        private let jackTopMesh  = MeshResource.generateBox(size: [0.06, 0.02, 0.06])
+
+        private let matRingGray = SimpleMaterial(color: UIColor.systemGray.withAlphaComponent(0.50), isMetallic: false)
+        private let matRingBlue = SimpleMaterial(color: UIColor.systemBlue.withAlphaComponent(0.50), isMetallic: false)
+
+        private let matBlue   = SimpleMaterial(color: .systemBlue, isMetallic: false)
+        private let matOrange = SimpleMaterial(color: .systemOrange, isMetallic: false)
+        private let matRed    = SimpleMaterial(color: .systemRed, isMetallic: false)
+        private let matJack   = SimpleMaterial(color: UIColor(white: 0.15, alpha: 0.9), isMetallic: false)
 
         init(sessionModel: ARSessionModel) {
             self.sessionModel = sessionModel
-            self.lugHeadMesh = Coordinator.makeHexPrismMesh(height: 0.010, radius: 0.015)
-            self.lugStemMesh = MeshResource.generateCylinder(height: 0.014, radius: 0.007)
         }
 
-        func attach(_ arView: ARView) {
+        func attach(_ arView: ARView, config: ARWorldTrackingConfiguration) {
             self.arView = arView
+            self.config = config
             arView.session.delegate = self
         }
 
+        func setActive(_ active: Bool) {
+            guard let arView, let config else { return }
+            guard active != sessionRunning else { return }
+            sessionRunning = active
+            if active { arView.session.run(config) }
+            else { arView.session.pause() }
+        }
+
+        // MARK: - Update
+
         func update(stepID: String, lugCount: Int) {
-            // Handle "Redo camera" requests
             if sessionModel.resetRequest != lastResetRequest {
                 lastResetRequest = sessionModel.resetRequest
                 resetARSession()
                 return
             }
 
-            // Only touch Published state if it actually changed
             if sessionModel.expectedLugCount != lugCount {
-                Task { @MainActor in self.sessionModel.setExpectedLugCount(lugCount) }
+                sessionModel.setExpectedLugCount(lugCount)
             }
 
-            // Build a stable key for loosened set to detect changes cheaply
-            let loosenedKey = sessionModel.loosenedLugs.sorted().map(String.init).joined(separator: ",")
+            syncAnchorFromModelIfNeeded()
 
-            let tightenedKey = sessionModel.tightenedLugs.sorted().map(String.init).joined(separator: ",")
-            let activeKey = sessionModel.activeLugIndex.map(String.init) ?? "-"
-            let setup = sessionModel.lugSetupConfirmed
-
-            // If nothing relevant changed, do nothing (prevents CPU spikes)
-            if stepID == lastStepID,
-               lugCount == lastLugCount,
-               sessionModel.isLocked == lastLocked,
-               loosenedKey == lastLoosenedKey,
-               tightenedKey == lastTightenedKey,
-               activeKey == lastActiveKey,
-               setup == lastSetupConfirmed {
-                return
+            if stepID != lastStepID {
+                lastStepID = stepID
+                transition(to: stageForStep(stepID))
             }
 
-            let enteringTighten = (stepID != lastStepID) && tightenSteps.contains(stepID) && !tightenSteps.contains(lastStepID)
-            if enteringTighten, sessionModel.lugSetupConfirmed {
-                self.sessionModel.beginTightenSequence()
-            }
-
-            lastStepID = stepID
-            lastLugCount = lugCount
-            lastLocked = sessionModel.isLocked
-            lastLoosenedKey = loosenedKey
-            lastTightenedKey = tightenedKey
-            lastActiveKey = activeKey
-            lastSetupConfirmed = setup
-
-            renderReuse()
+            ensureStaticExists()
+            applyStageSnapshot(animated: false) // keep visuals consistent
         }
 
-        func syncFromModel(stepID: String, lugCount: Int) {
-            update(stepID: stepID, lugCount: lugCount)
-        }
+        // MARK: - Tap placement
 
         @objc func handleTap(_ sender: UITapGestureRecognizer) {
             guard let arView else { return }
             let location = sender.location(in: arView)
             showTapFeedback(in: arView, at: location)
 
-            // A) Lug taps (loosen or tighten steps, only when locked and after setup)
-            if sessionModel.isLocked,
-               sessionModel.lugSetupConfirmed,
-               let entity = arView.entity(at: location),
-               entity.name.hasPrefix("rr_lug_"),
-               let idx = Int(entity.name.replacingOccurrences(of: "rr_lug_", with: "")) {
-
-                if lastStepID == "ft_loosen" {
-                    self.sessionModel.toggleLoosened(idx)
-                } else if tightenSteps.contains(lastStepID) {
-                    self.sessionModel.handleTightenTap(idx)
-                }
-                renderReuse()
-                return
-            }
-
-            // B) If already locked, do not allow reposition
             if sessionModel.isLocked {
-                Task { @MainActor in
-                    self.sessionModel.setStatus("Locked. Use Redo to move.")
-                }
+                sessionModel.setStatus("Locked. Use Redo to move.")
                 return
             }
 
-            // C) Place/reposition with “best hit” selection (prevents snapping)
             guard let hit = bestRaycastHit(in: arView, at: location) else {
-                Task { @MainActor in
-                    self.sessionModel.setStatus("No surface found. Move device slowly, then tap.")
-                }
+                sessionModel.setStatus("No surface found. Move device slowly, then tap.")
                 return
             }
 
-            // If already placed, only allow reposition if tap hit is near current anchor
-            if let current = sessionModel.wheelTransform {
-                let currentPos = SIMD3<Float>(current.columns.3.x, current.columns.3.y, current.columns.3.z)
-                let newPos = SIMD3<Float>(hit.worldTransform.columns.3.x, hit.worldTransform.columns.3.y, hit.worldTransform.columns.3.z)
-                let dist = simd_length(newPos - currentPos)
-                if dist > repositionMaxMeters {
-                    Task { @MainActor in
-                        self.sessionModel.setStatus("Tap near the ring to adjust (or press Redo).")
-                    }
-                    return
-                }
-            }
+            placeAnchor(from: hit)
 
-            let transform = hit.worldTransform
+            sessionModel.setStatus("Placed ✓")
             Task { @MainActor in
-                self.sessionModel.setAnchor(transform)
-                self.sessionModel.resetLugs()
-                self.sessionModel.lock() // ALWAYS lock after first placement
-            }
-
-            createOrUpdateAnchor(transform)
-            renderReuse()
-
-            Task { @MainActor in
-                self.sessionModel.setStatus("Placed ✓")
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                    self.sessionModel.setStatus(nil, phase: .none)
-                }
+                try? await Task.sleep(nanoseconds: 800_000_000)
+                self.sessionModel.setStatus(nil, phase: .none)
             }
         }
 
-        private func createOrUpdateAnchor(_ transform: simd_float4x4) {
-            guard let arView else { return }
-            if wheelAnchor == nil {
-                let a = AnchorEntity(world: transform)
-                wheelAnchor = a
-                arView.scene.addAnchor(a)
+        // MARK: - Stage mapping
+
+        private func stageForStep(_ stepID: String) -> Stage {
+            switch stepID {
+            case "ft_loosen":
+                return .loosen
+            case "ft_jackpoint":
+                return .jackPlaced
+            case "ft_jackup":
+                return .jackUp
+            case "ft_remove":
+                return .removed
+            case "ft_mount":
+                return .mount
+            case "ft_lower", "ft_aftercare":
+                return .lowered
+            default:
+                return .base
+            }
+        }
+
+        // MARK: - Transition (reversible)
+
+        private func transition(to target: Stage, immediate: Bool = false) {
+            guard contentRoot != nil else { stage = target; return }
+
+            transitionTask?.cancel()
+            transitionTask = nil
+
+            let from = stage
+            stage = target
+
+            if immediate {
+                applyStageSnapshot(animated: false)
+                return
+            }
+
+            transitionTask = Task { @MainActor in
+                await animateTransition(from: from, to: target)
+            }
+        }
+
+        private func animateTransition(from: Stage, to: Stage) async {
+            // Wheel lift + jack lift + ring swap
+            applyStageSnapshot(animated: true)
+
+            // Sequential lug motion only for these stages
+            if to == .loosen || from == .loosen {
+                await animateLugsSequentialForCurrentStage()
+            }
+            if to == .removed || from == .removed {
+                await animateLugsSequentialForCurrentStage()
+            }
+
+            // Tire swap is special (mount ↔ removed)
+            if from != .mount && to == .mount {
+                await animateTireSwapForward()
+            } else if from == .mount && to != .mount {
+                await animateTireSwapReverse()
+            }
+        }
+
+        // MARK: - Apply snapshot
+
+        private func applyStageSnapshot(animated: Bool) {
+            guard let contentRoot, let wheelGroup else { return }
+
+            // 1) Jack visibility + lift
+            let jackVisible: Bool = (stage == .jackPlaced || stage == .jackUp || stage == .removed || stage == .mount)
+            let jackExtended: Bool = (stage == .jackUp || stage == .removed || stage == .mount)
+
+            setJack(visible: jackVisible, extended: jackExtended, animated: animated)
+
+            // 2) Wheel lift (only wheelGroup moves)
+            let wheelLift: Float = (stage == .jackUp || stage == .removed || stage == .mount) ? jackLiftY : 0
+            setWheelLift(wheelLift, animated: animated)
+
+            // 3) Ring color/state (mount/lowered => blue ring)
+            ensureRingsExist()
+            let showBlue = (stage == .mount || stage == .lowered)
+            setRingState(showBlue: showBlue)
+
+            // 4) Lug targets + arrows (removed => arrows)
+            ensureLugsExist()
+            ensureLugArrowsExist()
+
+            let showArrows = (stage == .removed)
+            setArrows(visible: showArrows, animated: animated)
+
+            // Lugs:
+            // loosen: orange + slight rotate + slight radial out
+            // removed: red + up along normal + arrows
+            // mount/lowered/base: blue + seated
+            if animated {
+                // leave positioning to animation functions below for sequential clarity
             } else {
-                wheelAnchor?.transform.matrix = transform
+                snapLugsToCurrentStage()
             }
         }
+
+        // MARK: - Lugs
+
+        private func snapLugsToCurrentStage() {
+            let n = sessionModel.expectedLugCount
+            let base = lugPositions(count: n, radius: lugPatternRadius)
+
+            for i in 0..<n {
+                guard let lug = lugEntities[i], i < base.count else { continue }
+
+                let p = base[i]
+                let radial = simd_normalize(SIMD3<Float>(p.x, 0, p.z))
+
+                switch stage {
+                case .loosen, .jackPlaced, .jackUp:
+                    let pos = SIMD3<Float>(p.x + radial.x * lugLooseRadialOut,
+                                           lugBaseY,
+                                           p.z + radial.z * lugLooseRadialOut)
+                    let q = simd_quatf(angle: lugLooseRotation, axis: [0, 1, 0])
+                    lug.transform = Transform(scale: .one, rotation: q, translation: pos)
+                    setLugMaterial(lug, matOrange)
+
+                case .removed:
+                    let pos = SIMD3<Float>(p.x,
+                                           lugBaseY + lugRemovedNormalOut,
+                                           p.z)
+                    let q = simd_quatf(angle: lugLooseRotation, axis: [0, 1, 0])
+                    lug.transform = Transform(scale: .one, rotation: q, translation: pos)
+                    setLugMaterial(lug, matRed)
+
+                case .mount, .lowered, .base:
+                    let pos = SIMD3<Float>(p.x, lugBaseY, p.z)
+                    let q = simd_quatf(angle: 0, axis: [0, 1, 0])
+                    lug.transform = Transform(scale: .one, rotation: q, translation: pos)
+                    setLugMaterial(lug, matBlue)
+                }
+            }
+        }
+
+        private func animateLugsSequentialForCurrentStage() async {
+            let n = sessionModel.expectedLugCount
+            let base = lugPositions(count: n, radius: lugPatternRadius)
+
+            for i in 0..<n {
+                if Task.isCancelled { return }
+                guard let lug = lugEntities[i], i < base.count else { continue }
+
+                let p = base[i]
+                let radial = simd_normalize(SIMD3<Float>(p.x, 0, p.z))
+
+                let (pos, q, mat): (SIMD3<Float>, simd_quatf, SimpleMaterial) = {
+                    switch stage {
+                    case .loosen, .jackPlaced, .jackUp:
+                        let pos = SIMD3<Float>(p.x + radial.x * lugLooseRadialOut,
+                                               lugBaseY,
+                                               p.z + radial.z * lugLooseRadialOut)
+                        return (pos, simd_quatf(angle: lugLooseRotation, axis: [0, 1, 0]), matOrange)
+                    case .removed:
+                        let pos = SIMD3<Float>(p.x, lugBaseY + lugRemovedNormalOut, p.z)
+                        return (pos, simd_quatf(angle: lugLooseRotation, axis: [0, 1, 0]), matRed)
+                    case .mount, .lowered, .base:
+                        let pos = SIMD3<Float>(p.x, lugBaseY, p.z)
+                        return (pos, simd_quatf(angle: 0, axis: [0, 1, 0]), matBlue)
+                    }
+                }()
+
+                lug.move(to: Transform(scale: .one, rotation: q, translation: pos),
+                         relativeTo: wheelGroup,
+                         duration: 0.30,
+                         timingFunction: .easeInOut)
+
+                setLugMaterial(lug, mat)
+                try? await Task.sleep(nanoseconds: 140_000_000)
+            }
+        }
+
+        // MARK: - Arrows
+
+        private func setArrows(visible: Bool, animated: Bool) {
+            let n = sessionModel.expectedLugCount
+            let base = lugPositions(count: n, radius: lugPatternRadius)
+
+            for i in 0..<n {
+                guard let arrow = lugArrowEntities[i], i < base.count else { continue }
+                arrow.isEnabled = visible
+
+                let p = base[i]
+                let start = SIMD3<Float>(p.x, lugBaseY + 0.03, p.z)
+                let end   = SIMD3<Float>(p.x, lugBaseY + arrowTravel, p.z)
+
+                if animated {
+                    arrow.move(to: Transform(translation: visible ? end : start),
+                               relativeTo: wheelGroup,
+                               duration: 0.45,
+                               timingFunction: .easeInOut)
+                } else {
+                    arrow.transform.translation = visible ? end : start
+                }
+            }
+        }
+
+        // MARK: - Jack
+
+        private func setJack(visible: Bool, extended: Bool, animated: Bool) {
+            ensureJackExists()
+
+            jackBase?.isEnabled = visible
+            jackLift?.isEnabled = visible
+            jackTop?.isEnabled = visible
+
+            let liftY: Float = extended ? 0.06 : 0.02
+
+            if animated {
+                jackLift?.move(to: Transform(translation: [0, liftY, 0]),
+                               relativeTo: contentRoot,
+                               duration: 0.50,
+                               timingFunction: .easeInOut)
+
+                jackTop?.move(to: Transform(translation: [0, liftY + 0.05, 0]),
+                              relativeTo: contentRoot,
+                              duration: 0.50,
+                              timingFunction: .easeInOut)
+            } else {
+                jackLift?.transform.translation = [0, liftY, 0]
+                jackTop?.transform.translation  = [0, liftY + 0.05, 0]
+            }
+        }
+
+        private func setWheelLift(_ y: Float, animated: Bool) {
+            guard let wheelGroup else { return }
+            if animated {
+                wheelGroup.move(to: Transform(translation: [0, y, 0]),
+                                relativeTo: contentRoot,
+                                duration: 0.60,
+                                timingFunction: .easeInOut)
+            } else {
+                wheelGroup.transform.translation = [0, y, 0]
+            }
+        }
+
+        // MARK: - Tire swap
+
+        private func animateTireSwapForward() async {
+            ensureRingsExist()
+
+            // old gray flies up/out and disappears
+            if let oldRing {
+                oldRing.isEnabled = true
+                oldRing.move(to: Transform(translation: [0, ringY + 0.30, 0.18]),
+                             relativeTo: wheelGroup,
+                             duration: 0.55,
+                             timingFunction: .easeInOut)
+                try? await Task.sleep(nanoseconds: 550_000_000)
+                oldRing.isEnabled = false
+            }
+
+            // new blue flies in along normal to original position
+            if let newRing {
+                newRing.isEnabled = true
+                newRing.transform.translation = [0, ringY + 0.35, 0]
+                newRing.move(to: Transform(translation: [0, ringY, 0]),
+                             relativeTo: wheelGroup,
+                             duration: 0.55,
+                             timingFunction: .easeInOut)
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+
+            // nuts go in and turn blue
+            await animateLugsSequentialForCurrentStage()
+        }
+
+        private func animateTireSwapReverse() async {
+            ensureRingsExist()
+
+            // new blue flies out (up), hide
+            if let newRing {
+                newRing.isEnabled = true
+                newRing.move(to: Transform(translation: [0, ringY + 0.35, 0]),
+                             relativeTo: wheelGroup,
+                             duration: 0.45,
+                             timingFunction: .easeInOut)
+                try? await Task.sleep(nanoseconds: 450_000_000)
+                newRing.isEnabled = false
+            }
+
+            // old gray returns
+            if let oldRing {
+                oldRing.isEnabled = true
+                oldRing.transform.translation = [0, ringY + 0.30, 0.18]
+                oldRing.move(to: Transform(translation: [0, ringY, 0]),
+                             relativeTo: wheelGroup,
+                             duration: 0.45,
+                             timingFunction: .easeInOut)
+            }
+
+            // restore lugs based on current stage (likely removed)
+            await animateLugsSequentialForCurrentStage()
+        }
+
+        private func setRingState(showBlue: Bool) {
+            ensureRingsExist()
+            if showBlue {
+                oldRing?.model?.materials = [matRingGray]
+                newRing?.model?.materials = [matRingBlue]
+            } else {
+                oldRing?.model?.materials = [matRingGray]
+                newRing?.model?.materials = [matRingBlue]
+            }
+            // base behavior: gray visible; mount/lowered: blue visible
+            oldRing?.isEnabled = !showBlue
+            newRing?.isEnabled = showBlue
+        }
+
+        // MARK: - Creation
+
+        private func ensureStaticExists() {
+            guard wheelGroup != nil else { return }
+            ensureRingsExist()
+            ensureJackExists()
+            ensureLugsExist()
+            ensureLugArrowsExist()
+        }
+
+        private func ensureRingsExist() {
+            guard let wheelGroup else { return }
+
+            if oldRing == nil {
+                let r = ModelEntity(mesh: ringMesh, materials: [matRingGray])
+                r.name = "rr_old_ring"
+                r.position = [0, ringY, 0]
+                oldRing = r
+                wheelGroup.addChild(r)
+            }
+            if newRing == nil {
+                let r = ModelEntity(mesh: ringMesh, materials: [matRingBlue])
+                r.name = "rr_new_ring"
+                r.position = [0, ringY, 0]
+                r.isEnabled = false
+                newRing = r
+                wheelGroup.addChild(r)
+            }
+        }
+
+        private func ensureJackExists() {
+            guard let root = contentRoot else { return }
+            if jackBase == nil {
+                let b = ModelEntity(mesh: jackBaseMesh, materials: [matJack])
+                b.name = "rr_jack_base"
+                b.position = [0, 0.01, 0]
+                b.isEnabled = false
+                jackBase = b
+                root.addChild(b)
+            }
+            if jackLift == nil {
+                let l = ModelEntity(mesh: jackLiftMesh, materials: [matJack])
+                l.name = "rr_jack_lift"
+                l.position = [0, 0.02, 0]
+                l.isEnabled = false
+                jackLift = l
+                root.addChild(l)
+            }
+            if jackTop == nil {
+                let t = ModelEntity(mesh: jackTopMesh, materials: [matJack])
+                t.name = "rr_jack_top"
+                t.position = [0, 0.07, 0]
+                t.isEnabled = false
+                jackTop = t
+                root.addChild(t)
+            }
+        }
+
+        private func ensureLugsExist() {
+            guard let wheelGroup else { return }
+            guard sessionModel.lugSetupConfirmed, sessionModel.isLocked else { return }
+
+            let n = sessionModel.expectedLugCount
+            for i in 0..<n {
+                if lugEntities[i] == nil {
+                    let head = ModelEntity(mesh: lugHeadMesh, materials: [matBlue])
+                    head.name = "rr_lug_\(i)"
+                    head.components.set(InputTargetComponent())
+                    head.generateCollisionShapes(recursive: true)
+
+                    let stem = ModelEntity(mesh: lugStemMesh, materials: [matBlue])
+                    stem.name = "rr_lug_stem"
+                    let stemY = -(headHeight * 0.5 + stemHeight * 0.5)
+                    stem.position = [0, stemY, 0]
+                    head.addChild(stem)
+
+                    lugEntities[i] = head
+                    wheelGroup.addChild(head)
+                }
+            }
+        }
+
+        private func ensureLugArrowsExist() {
+            guard let wheelGroup else { return }
+            let n = sessionModel.expectedLugCount
+            for i in 0..<n {
+                if lugArrowEntities[i] == nil {
+                    let root = Entity()
+                    root.name = "rr_lug_arrow_\(i)"
+                    root.isEnabled = false
+
+                    let stem = ModelEntity(mesh: arrowStemMesh, materials: [matRed])
+                    let head = ModelEntity(mesh: arrowHeadMesh, materials: [matRed])
+                    head.position = [0, 0.075, 0]
+                    stem.addChild(head)
+
+                    root.addChild(stem)
+                    lugArrowEntities[i] = root
+                    wheelGroup.addChild(root)
+                }
+            }
+        }
+
+        private func setLugMaterial(_ head: ModelEntity, _ mat: SimpleMaterial) {
+            head.model?.materials = [mat]
+            if let stem = head.findEntity(named: "rr_lug_stem") as? ModelEntity {
+                stem.model?.materials = [mat]
+            }
+        }
+
+        private func lugPositions(count: Int, radius: Float) -> [SIMD3<Float>] {
+            guard count > 0 else { return [] }
+            return (0..<count).map { i in
+                let a = Float(i) * (2 * .pi / Float(count))
+                return [radius * cos(a), lugBaseY, radius * sin(a)]
+            }
+        }
+
+        // MARK: - Stable anchor placement
+
+        private func placeAnchor(at transform: simd_float4x4) {
+            guard let arView else { return }
+
+            if let old = wheelARAnchor {
+                arView.session.remove(anchor: old)
+            }
+            anchorEntity?.removeFromParent()
+
+            let arAnchor = ARAnchor(transform: transform)
+            wheelARAnchor = arAnchor
+            arView.session.add(anchor: arAnchor)
+
+            let ae = AnchorEntity(anchor: arAnchor)
+            anchorEntity = ae
+            arView.scene.addAnchor(ae)
+
+            let root = Entity()
+            root.name = "rr_content_root"
+            contentRoot = root
+            ae.addChild(root)
+
+            let wg = Entity()
+            wg.name = "rr_wheel_group"
+            wheelGroup = wg
+            root.addChild(wg)
+
+            oldRing = nil
+            newRing = nil
+            jackBase = nil
+            jackLift = nil
+            jackTop = nil
+            lugEntities.removeAll()
+            lugArrowEntities.removeAll()
+        }
+
+        private func syncAnchorFromModelIfNeeded() {
+            guard anchorEntity == nil, let t = sessionModel.wheelTransform else { return }
+            placeAnchor(at: t)
+        }
+
+        // MARK: - Reset
 
         private func resetARSession() {
-            guard let arView else { return }
+            guard let arView, let config else { return }
 
-            // Clear scene + cached entities
-            wheelAnchor?.removeFromParent()
-            wheelAnchor = nil
-            ringEntity = nil
+            transitionTask?.cancel()
+            transitionTask = nil
+
+            if let old = wheelARAnchor {
+                arView.session.remove(anchor: old)
+            }
+            wheelARAnchor = nil
+
+            anchorEntity?.removeFromParent()
+            anchorEntity = nil
+            contentRoot = nil
+            wheelGroup = nil
+
+            oldRing = nil
+            newRing = nil
+            jackBase = nil
+            jackLift = nil
+            jackTop = nil
             lugEntities.removeAll()
+            lugArrowEntities.removeAll()
+            removedLugs.removeAll()
 
-            #if DEBUG
-            for a in planeAxisAnchors { a.removeFromParent() }
-            planeAxisAnchors.removeAll()
-            planeAxisIDs.removeAll()
-            axesArmed = false
-            #endif
+            stage = .base
+            lastStepID = ""
 
-            Task { @MainActor in
-                self.sessionModel.resetAlignment()
-                self.sessionModel.setStatus("Resetting AR…", phase: .resetting)
-            }
-
-            awaitingReadyAfterReset = true
-
-            if let config = arView.session.configuration {
-                arView.session.run(config, options: [.resetTracking, .removeExistingAnchors])
-            }
+            sessionModel.resetAlignment()
+            sessionModel.setStatus("Resetting AR…", phase: .resetting)
+            arView.session.run(config, options: [.resetTracking, .removeExistingAnchors])
         }
 
-        // ARSessionDelegate: when tracking becomes normal after reset -> show checkmark
-        func session(_ session: ARSession, cameraDidChangeTrackingState camera: ARCamera) {
-            guard awaitingReadyAfterReset else { return }
-
-            if case .normal = camera.trackingState {
-                awaitingReadyAfterReset = false
-
-                Task { @MainActor in
-                    #if DEBUG
-                    axesArmed = true
-                    applyPlaneAxesFromCurrentFrame(session)
-                    #endif
-
-                    self.sessionModel.setStatus("Ready", phase: .ready)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                        self.sessionModel.setStatus(nil, phase: .none)
-                    }
-                }
-            }
-        }
-
-        #if DEBUG
-        func session(_ session: ARSession, didAdd anchors: [ARAnchor]) {
-            guard axesArmed else { return }
-            Task { @MainActor in
-                guard let arView else { return }
-                guard planeAxisAnchors.count < maxPlaneAxis else { return }
-
-                for case let plane as ARPlaneAnchor in anchors {
-                    guard planeAxisAnchors.count < maxPlaneAxis else { break }
-                    guard !planeAxisIDs.contains(plane.identifier) else { continue }
-
-                    planeAxisIDs.insert(plane.identifier)
-                    let a = AnchorEntity(anchor: plane)
-                    a.name = "rr_plane_axis_\(plane.identifier)"
-                    a.addChild(makeAxis())
-                    arView.scene.addAnchor(a)
-                    planeAxisAnchors.append(a)
-                }
-            }
-        }
-        #endif
-
-        #if DEBUG
-        private func applyPlaneAxesFromCurrentFrame(_ session: ARSession) {
-            guard let arView else { return }
-            guard planeAxisAnchors.count < maxPlaneAxis else { return }
-            guard let frame = session.currentFrame else { return }
-
-            for case let plane as ARPlaneAnchor in frame.anchors {
-                guard planeAxisAnchors.count < maxPlaneAxis else { break }
-                guard !planeAxisIDs.contains(plane.identifier) else { continue }
-
-                planeAxisIDs.insert(plane.identifier)
-                let a = AnchorEntity(anchor: plane)
-                a.name = "rr_plane_axis_\(plane.identifier)"
-                a.addChild(makeAxis())
-                arView.scene.addAnchor(a)
-                planeAxisAnchors.append(a)
-            }
-        }
-        #endif
-
-        #if DEBUG
-        private func makeAxis() -> Entity {
-            let root = Entity()
-            let length: Float = 0.20
-            let t: Float = 0.06 // thickness scale
-
-            let x = ModelEntity(mesh: .generateBox(size: length), materials: [SimpleMaterial(color: .systemRed, isMetallic: false)])
-            x.scale = [1, t, t]
-            x.position.x = length / 2
-
-            let y = ModelEntity(mesh: .generateBox(size: length), materials: [SimpleMaterial(color: .systemGreen, isMetallic: false)])
-            y.scale = [t, 1, t]
-            y.position.y = length / 2
-
-            let z = ModelEntity(mesh: .generateBox(size: length), materials: [SimpleMaterial(color: .systemBlue, isMetallic: false)])
-            z.scale = [t, t, 1]
-            z.position.z = length / 2
-
-            root.addChild(x)
-            root.addChild(y)
-            root.addChild(z)
-            return root
-        }
-        #endif
+        // MARK: - Raycast
 
         private func distanceFromCamera(to worldTransform: simd_float4x4, in arView: ARView) -> Float {
             let cameraPos = arView.cameraTransform.translation
@@ -345,7 +725,7 @@ struct ARViewContainer: UIViewRepresentable {
         }
 
         private func bestRaycastHit(in arView: ARView, at location: CGPoint) -> ARRaycastResult? {
-            // Prefer stable plane results first (prevents “snap”)
+            // Prefer real planes
             let preferred: [(ARRaycastQuery.Target, ARRaycastQuery.TargetAlignment, Float)] = [
                 (.existingPlaneGeometry, .any, 3.0),
                 (.existingPlaneInfinite, .any, 3.0)
@@ -354,131 +734,50 @@ struct ARViewContainer: UIViewRepresentable {
             for (target, alignment, maxDist) in preferred {
                 if let q = arView.makeRaycastQuery(from: location, allowing: target, alignment: alignment) {
                     let results = arView.session.raycast(q)
-                    if let first = results.first {
-                        let d = distanceFromCamera(to: first.worldTransform, in: arView)
-                        if d < maxDist { return first }
+                    if let first = results.first, distanceFromCamera(to: first.worldTransform, in: arView) < maxDist {
+                        return first
                     }
+                }
+            }
+
+            // Bounded fallback for responsiveness
+            if let q = arView.makeRaycastQuery(from: location, allowing: .estimatedPlane, alignment: .any) {
+                let results = arView.session.raycast(q)
+                if let first = results.first, distanceFromCamera(to: first.worldTransform, in: arView) < 1.2 {
+                    return first
                 }
             }
 
             return nil
         }
 
-        // MARK: - Rendering
-
-        private func renderReuse() {
-            guard let anchor = wheelAnchor else { return }
-
-            // Ensure ring exists once
-            if ringEntity == nil {
-                let color = UIColor.systemGray.withAlphaComponent(0.25)
-                let ring = ModelEntity(mesh: ringMesh, materials: [SimpleMaterial(color: color, isMetallic: false)])
-                ring.name = "rr_ring"
-                ring.position = [0, 0.012, 0]
-                ringEntity = ring
-                anchor.addChild(ring)
-            }
-
-            // Lugs visible after setup is confirmed AND locked
-            let showLugs = (sessionModel.lugSetupConfirmed && sessionModel.isLocked)
-
-            if !showLugs {
-                // Hide (don’t remove) lug entities
-                for (_, lug) in lugEntities { lug.isEnabled = false }
-                return
-            }
-
-            // Ensure lug entities exist up to lugCount (create once)
-            let positions = lugPositions(count: lastLugCount, radius: 0.13)
-            for i in 0..<lastLugCount {
-                if lugEntities[i] == nil {
-                    let head = ModelEntity(mesh: lugHeadMesh, materials: [matBlue])
-                    head.name = "rr_lug_\(i)"
-                    head.components.set(InputTargetComponent())
-                    head.generateCollisionShapes(recursive: false)   // collision on head only
-
-                    let stem = ModelEntity(mesh: lugStemMesh, materials: [matBlue])
-                    stem.name = "rr_lug_stem"
-                    stem.position = [0, -0.010, 0] // place stem below the head
-                    head.addChild(stem)
-
-                    lugEntities[i] = head
-                    anchor.addChild(head)
-                }
-            }
-
-            // Update positions + colors + visibility (cheap)
-            for i in 0..<lastLugCount {
-                guard let lug = lugEntities[i] else { continue }
-                lug.isEnabled = true
-                if i < positions.count { lug.position = positions[i] }
-
-                let mat: SimpleMaterial
-                if lastStepID == "ft_loosen" {
-                    mat = sessionModel.loosenedLugs.contains(i) ? matGreen : matBlue
-                } else if tightenSteps.contains(lastStepID) {
-                    if i == sessionModel.activeLugIndex { mat = matRed }
-                    else if sessionModel.tightenedLugs.contains(i) { mat = matGreen }
-                    else { mat = matBlue }
-                } else {
-                    mat = matBlue
-                }
-
-                lug.model?.materials = [mat]
-                if let stem = lug.findEntity(named: "rr_lug_stem") as? ModelEntity {
-                    stem.model?.materials = [mat]
-                }
-            }
-
-            // Hide any extras from previous larger lugCount
-            for (i, lug) in lugEntities where i >= lastLugCount {
-                lug.isEnabled = false
-            }
-        }
-
-        private func lugPositions(count: Int, radius: Float = 0.13) -> [SIMD3<Float>] {
-            guard count > 0 else { return [] }
-            return (0..<count).map { i in
-                let angle = Float(i) * (2 * .pi / Float(count))
-                // x/z lie in the surface plane; y is surface normal
-                return [radius * cos(angle), 0.016, radius * sin(angle)]
-            }
-        }
+        // MARK: - Mesh generators
 
         private static func makeHexPrismMesh(height: Float, radius: Float) -> MeshResource {
             var desc = MeshDescriptor()
-
             let h = height / 2
             var positions: [SIMD3<Float>] = []
-            var normals: [SIMD3<Float>] = []
 
-            // 0..5 bottom ring, 6..11 top ring
+            // bottom 0..5, top 6..11
             for i in 0..<6 {
                 let a = Float(i) * (2 * .pi / 6)
-                let x = radius * cos(a)
-                let z = radius * sin(a)
-                positions.append([x, -h, z])
-                normals.append(simd_normalize([x, 0, z])) // outward
+                positions.append([radius * cos(a), -h, radius * sin(a)])
             }
             for i in 0..<6 {
                 let a = Float(i) * (2 * .pi / 6)
-                let x = radius * cos(a)
-                let z = radius * sin(a)
-                positions.append([x,  h, z])
-                normals.append(simd_normalize([x, 0, z])) // outward
+                positions.append([radius * cos(a),  h, radius * sin(a)])
             }
 
             let bottomCenter: UInt32 = 12
             let topCenter: UInt32 = 13
-            positions.append([0, -h, 0]); normals.append([0, -1, 0])
-            positions.append([0,  h, 0]); normals.append([0,  1, 0])
+            positions.append([0, -h, 0])
+            positions.append([0,  h, 0])
 
             desc.positions = MeshBuffers.Positions(positions)
-            desc.normals   = MeshBuffers.Normals(normals)
 
             var idx: [UInt32] = []
 
-            // Sides (6 quads => 12 triangles)
+            // sides
             for i: UInt32 in 0..<6 {
                 let b0 = i
                 let b1 = (i + 1) % 6
@@ -487,30 +786,84 @@ struct ARViewContainer: UIViewRepresentable {
                 idx += [b0, t0, t1,  b0, t1, b1]
             }
 
-            // Bottom cap (CCW when viewed from below)
+            // bottom cap
             for i: UInt32 in 0..<6 {
                 let b0 = i
                 let b1 = (i + 1) % 6
-                idx += [bottomCenter, b0, b1]
+                idx += [bottomCenter, b1, b0]
             }
 
-            // Top cap (CCW when viewed from above)
+            // top cap
             for i: UInt32 in 0..<6 {
                 let t0 = i + 6
                 let t1 = ((i + 1) % 6) + 6
-                idx += [topCenter, t1, t0]
+                idx += [topCenter, t0, t1]
             }
 
             desc.primitives = .triangles(idx)
 
-            do {
-                return try MeshResource.generate(from: [desc])
-            } catch {
-                #if DEBUG
-                print("Hex mesh gen failed:", error)
-                #endif
-                return .generateCylinder(height: height, radius: radius)
+            do { return try MeshResource.generate(from: [desc]) }
+            catch { return .generateCylinder(height: height, radius: radius) }
+        }
+
+        private static func makeAnnulusMesh(height: Float, inner: Float, outer: Float, segments: Int) -> MeshResource {
+            var desc = MeshDescriptor()
+            let h = height / 2
+            let seg = max(12, segments)
+
+            var positions: [SIMD3<Float>] = []
+            positions.reserveCapacity(seg * 4)
+
+            func addRing(y: Float, r: Float) {
+                for i in 0..<seg {
+                    let a = (Float(i) / Float(seg)) * (2 * .pi)
+                    positions.append([r * cos(a), y, r * sin(a)])
+                }
             }
+
+            addRing(y: +h, r: outer) // top outer
+            addRing(y: +h, r: inner) // top inner
+            addRing(y: -h, r: outer) // bottom outer
+            addRing(y: -h, r: inner) // bottom inner
+
+            desc.positions = MeshBuffers.Positions(positions)
+
+            var idx: [UInt32] = []
+            let topOuterBase: UInt32 = 0
+            let topInnerBase: UInt32 = UInt32(seg)
+            let botOuterBase: UInt32 = UInt32(seg * 2)
+            let botInnerBase: UInt32 = UInt32(seg * 3)
+
+            for i in 0..<seg {
+                let i0 = UInt32(i)
+                let i1 = UInt32((i + 1) % seg)
+
+                // Top face
+                idx += [
+                    topOuterBase + i0, topInnerBase + i0, topInnerBase + i1,
+                    topOuterBase + i0, topInnerBase + i1, topOuterBase + i1
+                ]
+                // Bottom face (reverse)
+                idx += [
+                    botOuterBase + i0, botInnerBase + i1, botInnerBase + i0,
+                    botOuterBase + i0, botOuterBase + i1, botInnerBase + i1
+                ]
+                // Outer wall
+                idx += [
+                    topOuterBase + i0, botOuterBase + i0, botOuterBase + i1,
+                    topOuterBase + i0, botOuterBase + i1, topOuterBase + i1
+                ]
+                // Inner wall (reverse)
+                idx += [
+                    topInnerBase + i0, botInnerBase + i1, botInnerBase + i0,
+                    topInnerBase + i0, topInnerBase + i1, botInnerBase + i1
+                ]
+            }
+
+            desc.primitives = .triangles(idx)
+
+            do { return try MeshResource.generate(from: [desc]) }
+            catch { return .generateCylinder(height: height, radius: outer) }
         }
 
         // MARK: - Tap feedback
@@ -526,15 +879,92 @@ struct ARViewContainer: UIViewRepresentable {
 
             arView.addSubview(dot)
 
-            UIView.animate(withDuration: 0.12, delay: 0, options: [.curveEaseOut]) {
-                dot.transform = .identity
-            }
+            UIView.animate(withDuration: 0.12, delay: 0, options: [.curveEaseOut]) { dot.transform = .identity }
             UIView.animate(withDuration: 0.35, delay: 0.12, options: [.curveEaseIn]) {
                 dot.alpha = 0
                 dot.transform = CGAffineTransform(scaleX: 1.6, y: 1.6)
             } completion: { _ in
                 dot.removeFromSuperview()
             }
+        }
+
+        // MARK: - New placeAnchor(from:) method
+
+        private func placeAnchor(from hit: ARRaycastResult) {
+            guard let arView else { return }
+
+            // Build a transform whose local +Y is the surface normal (works for floor + wall)
+            let t = orientedTransform(from: hit.worldTransform)
+
+            if let old = wheelARAnchor {
+                arView.session.remove(anchor: old)
+            }
+            anchorEntity?.removeFromParent()
+
+            let arAnchor = ARAnchor(transform: t)
+            wheelARAnchor = arAnchor
+            arView.session.add(anchor: arAnchor)
+
+            let ae = AnchorEntity(anchor: arAnchor)
+            anchorEntity = ae
+            arView.scene.addAnchor(ae)
+
+            let root = Entity()
+            root.name = "rr_content_root"
+            contentRoot = root
+            ae.addChild(root)
+
+            let wg = Entity()
+            wg.name = "rr_wheel_group"
+            wheelGroup = wg
+            root.addChild(wg)
+
+            // clear cached entities
+            oldRing = nil
+            newRing = nil
+            jackBase = nil
+            jackLift = nil
+            jackTop = nil
+            lugEntities.removeAll()
+            lugArrowEntities.removeAll()
+            removedLugs.removeAll()
+        }
+
+        // MARK: - Oriented transform helper
+
+        private func orientedTransform(from worldTransform: simd_float4x4) -> simd_float4x4 {
+            let pos = SIMD3<Float>(worldTransform.columns.3.x, worldTransform.columns.3.y, worldTransform.columns.3.z)
+
+            // Candidate axes from raycast transform
+            let xAxis = simd_normalize(SIMD3<Float>(worldTransform.columns.0.x, worldTransform.columns.0.y, worldTransform.columns.0.z))
+            let yAxis = simd_normalize(SIMD3<Float>(worldTransform.columns.1.x, worldTransform.columns.1.y, worldTransform.columns.1.z))
+            let zAxis = simd_normalize(SIMD3<Float>(worldTransform.columns.2.x, worldTransform.columns.2.y, worldTransform.columns.2.z))
+
+            let worldUp = SIMD3<Float>(0, 1, 0)
+
+            // Choose the axis most likely to be the surface normal:
+            // - for floors: yAxis ~ worldUp
+            // - for walls:  zAxis is typically horizontal (dot with worldUp small)
+            let yDot = abs(simd_dot(yAxis, worldUp))
+            let zDot = abs(simd_dot(zAxis, worldUp))
+            let normalWorld: SIMD3<Float> = (yDot > 0.70) ? yAxis : zAxis
+
+            var yN = simd_normalize(normalWorld)
+
+            // Build an orthonormal basis: x = up × y (fallback if near-parallel)
+            var xN = simd_cross(worldUp, yN)
+            if simd_length(xN) < 1e-4 {
+                xN = xAxis
+            }
+            xN = simd_normalize(xN)
+            let zN = simd_normalize(simd_cross(yN, xN))
+
+            var m = matrix_identity_float4x4
+            m.columns.0 = SIMD4<Float>(xN.x, xN.y, xN.z, 0)
+            m.columns.1 = SIMD4<Float>(yN.x, yN.y, yN.z, 0)   // local +Y = surface normal
+            m.columns.2 = SIMD4<Float>(zN.x, zN.y, zN.z, 0)
+            m.columns.3 = SIMD4<Float>(pos.x, pos.y, pos.z, 1)
+            return m
         }
     }
 }

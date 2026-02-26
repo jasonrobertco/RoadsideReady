@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UIKit
 
 private extension View {
     func rrActionPill() -> some View {
@@ -21,6 +22,13 @@ private extension View {
 
 struct RootView: View {
     @StateObject private var engine = FlowEngine()
+
+    @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(\.verticalSizeClass) private var vSize
+
+    private var isPhonePortrait: Bool {
+        UIDevice.current.userInterfaceIdiom == .phone && hSize == .compact && vSize == .regular
+    }
 
     private enum DrawerState { case hidden, peek, open }
     @State private var drawerState: DrawerState = .hidden
@@ -125,24 +133,52 @@ struct RootView: View {
 
     // Header: left Articles, centered title, right issue menu
     private var headerBar: some View {
-        ZStack {
-            Text("Roadside Ready")
-                .font(.largeTitle.weight(.semibold))
+        Group {
+            if isPhonePortrait {
+                VStack(spacing: 10) {
+                    HStack {
+                        Button {
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.9)) {
+                                drawerState = .peek
+                            }
+                        } label: {
+                            Label("Articles", systemImage: "newspaper")
+                                .rrActionPill()
+                        }
+                        .buttonStyle(.plain)
 
-            HStack {
-                Button {
-                    withAnimation(.spring(response: 0.28, dampingFraction: 0.9)) {
-                        drawerState = .peek
+                        Spacer()
+                        issueMenu
                     }
-                } label: {
-                    Label("Articles", systemImage: "newspaper")
-                        .rrActionPill()
+
+                    Text("Roadside Ready")
+                        .font(.system(size: 28, weight: .semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                 }
-                .buttonStyle(.plain)
+                .padding(.top, 6)
+            } else {
+                ZStack {
+                    Text("Roadside Ready")
+                        .font(.largeTitle.weight(.semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
 
-                Spacer()
+                    HStack {
+                        Button {
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.9)) {
+                                drawerState = .peek
+                            }
+                        } label: {
+                            Label("Articles", systemImage: "newspaper")
+                                .rrActionPill()
+                        }
+                        .buttonStyle(.plain)
 
-                issueMenu
+                        Spacer()
+                        issueMenu
+                    }
+                }
             }
         }
     }

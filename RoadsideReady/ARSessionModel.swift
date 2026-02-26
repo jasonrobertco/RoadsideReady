@@ -8,24 +8,32 @@ import simd
 final class ARSessionModel: ObservableObject {
     enum StatusPhase { case none, resetting, ready }
 
+    // Anchor placement
     @Published var wheelTransform: simd_float4x4? = nil
     @Published var isAligned: Bool = false
     @Published var isLocked: Bool = false
 
+    // Lug setup + progress
     @Published var expectedLugCount: Int = 5
-    @Published var loosenedLugs: Set<Int> = []
-
     @Published var lugSetupConfirmed: Bool = false
 
+    // Loosen step (user confirms each lug loosened)
+    @Published var loosenedLugs: Set<Int> = []
+
+    // Tighten sequence steps
     @Published var tightenedLugs: Set<Int> = []
     @Published var activeLugIndex: Int? = nil
 
-    // Redo button trigger (ARViewContainer watches this)
+    // Redo trigger (ARViewContainer watches this)
     @Published var resetRequest: Int = 0
+
+    // Inline status pill (used by FlowScreen)
     @Published var statusText: String? = nil
     @Published var statusPhase: StatusPhase = .none
 
     var hasAnchor: Bool { wheelTransform != nil }
+
+    // MARK: - Placement / locking
 
     func setAnchor(_ transform: simd_float4x4) {
         wheelTransform = transform
@@ -34,21 +42,38 @@ final class ARSessionModel: ObservableObject {
 
         // New placement => require setup again
         lugSetupConfirmed = false
+        expectedLugCount = max(5, min(8, expectedLugCount))
+
+        loosenedLugs.removeAll()
         tightenedLugs.removeAll()
         activeLugIndex = nil
-        loosenedLugs.removeAll()
     }
 
     func lock()   { if hasAnchor { isLocked = true } }
     func unlock() { isLocked = false }
 
-    // CRITICAL: idempotent to avoid update loops
+    // MARK: - Lug setup
+
+    // Keep this idempotent to avoid SwiftUI update loops
     func setExpectedLugCount(_ n: Int) {
-        let v = max(3, min(10, n))
+        let v = max(5, min(8, n))
         guard v != expectedLugCount else { return }
         expectedLugCount = v
         loosenedLugs = loosenedLugs.filter { $0 < expectedLugCount }
+        tightenedLugs = tightenedLugs.filter { $0 < expectedLugCount }
+        if let a = activeLugIndex, a >= expectedLugCount { activeLugIndex = nil }
     }
+
+    func confirmLugSetup(_ n: Int) {
+        setExpectedLugCount(n)
+        lugSetupConfirmed = true
+
+        // Setup confirmation resets tighten progress (loosen progress is separate)
+        tightenedLugs.removeAll()
+        activeLugIndex = nil
+    }
+
+    // MARK: - Loosen
 
     func toggleLoosened(_ idx: Int) {
         guard idx >= 0 && idx < expectedLugCount else { return }
@@ -56,21 +81,21 @@ final class ARSessionModel: ObservableObject {
         else { loosenedLugs.insert(idx) }
     }
 
+    func markLoosened(_ idx: Int) {
+        guard idx >= 0 && idx < expectedLugCount else { return }
+        loosenedLugs.insert(idx)
+    }
+
     func resetLugs() { loosenedLugs.removeAll() }
 
-    func confirmLugSetup(_ n: Int) {
-        setExpectedLugCount(n)
-        lugSetupConfirmed = true
-        tightenedLugs.removeAll()
-        activeLugIndex = nil
-    }
+    // MARK: - Tighten sequence
 
     func beginTightenSequence() {
         tightenedLugs.removeAll()
         activeLugIndex = tightenOrder().first
     }
 
-    /// Star-pattern order (works for 5–8; also works for 7)
+    /// Star-pattern order (supports 5–8; also works for 7)
     func tightenOrder() -> [Int] {
         let n = expectedLugCount
         guard n >= 3 else { return Array(0..<n) }
@@ -103,8 +128,8 @@ final class ARSessionModel: ObservableObject {
     }
 
     func handleTightenTap(_ idx: Int) {
-        guard idx >= 0 && idx < expectedLugCount else { return }
         guard lugSetupConfirmed else { return }
+        guard idx >= 0 && idx < expectedLugCount else { return }
 
         if let active = activeLugIndex, idx != active {
             setStatus("Tap the highlighted lug next.")
@@ -118,21 +143,26 @@ final class ARSessionModel: ObservableObject {
 
         if next == nil {
             setStatus("Sequence complete ✓", phase: .ready)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                self.setStatus(nil, phase: .none)
-            }
+            clearStatus(afterSeconds: 0.8)
         }
     }
+
+    // MARK: - Reset
 
     func resetAlignment() {
         wheelTransform = nil
         isAligned = false
         isLocked = false
-        loosenedLugs.removeAll()
+
         lugSetupConfirmed = false
+        expectedLugCount = max(5, min(8, expectedLugCount))
+
+        loosenedLugs.removeAll()
         tightenedLugs.removeAll()
         activeLugIndex = nil
     }
+
+    // MARK: - Status
 
     func setStatus(_ text: String?, phase: StatusPhase = .none) {
         statusText = text
@@ -142,5 +172,12 @@ final class ARSessionModel: ObservableObject {
     func requestReset() {
         resetRequest &+= 1
         setStatus("Resetting AR…", phase: .resetting)
+    }
+
+    private func clearStatus(afterSeconds seconds: Double) {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            self.setStatus(nil, phase: .none)
+        }
     }
 }

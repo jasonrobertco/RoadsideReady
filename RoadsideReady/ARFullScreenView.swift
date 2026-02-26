@@ -38,7 +38,7 @@ struct ARFullScreenView: View {
             }
             #else
             ZStack {
-                ARViewContainer(currentStepID: currentStepID, lugCount: lugCount, sessionModel: sessionModel)
+                ARViewContainer(currentStepID: currentStepID, lugCount: lugCount, sessionModel: sessionModel, isActive: true)
                     .ignoresSafeArea()
 
                 if let t = arFullHintText {

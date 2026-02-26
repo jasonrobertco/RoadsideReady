@@ -14,6 +14,7 @@
 		118D25952F41CECB00528720 /* Exceptions for "RoadsideReady" folder in "RoadsideReady" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				ARFullScreenView.swift,
 				Info.plist,
 			);
 			target = 118D25742F4127D900528720 /* RoadsideReady */;
