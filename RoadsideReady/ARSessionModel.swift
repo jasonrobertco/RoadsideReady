@@ -1,10 +1,3 @@
-// Deprecated: Replaced by ARSessionModel.swift
-// This file is intentionally left empty to avoid duplicate type declarations.
-
-import Foundation
-
-// Legacy ARSessionModel removed. See ARSessionModel.swift for the current implementation.
-
 // ARSessionModel.swift
 
 import Combine

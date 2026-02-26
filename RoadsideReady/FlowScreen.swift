@@ -84,16 +84,7 @@ struct FlowScreen: View {
     private let voiceControlInstructionsText =
     "Voice help. With Voice Control, you can say: Tap Next, or Tap Back. With VoiceOver, swipe to navigate and double-tap to activate."
     
-    @State private var showARFullScreen = false
     @State private var showCompletion = false
-
-    private var arAvailable: Bool {
-    #if targetEnvironment(simulator)
-        return false
-    #else
-        return true
-    #endif
-    }
 
     private let flatTireHeroMap: [String: String] = [
         "ft_safety": "hero_safety",
@@ -407,28 +398,17 @@ struct FlowScreen: View {
                 .padding(14)
                 .opacity(visualMode == .infographic ? 1 : 0)
 
-                Group {
-                #if targetEnvironment(simulator)
-                    ARUnavailableInlineView()
-                #else
-                    ARViewContainer(currentStepID: engine.currentStep.id, lugCount: lugCount, sessionModel: arSession)
-                #endif
-                }
-                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                .opacity(visualMode == .camera ? 1 : 0)
-                .allowsHitTesting(visualMode == .camera)
-            }
-            .overlay(alignment: .topTrailing) {
-                if visualMode == .camera && arAvailable {
-                    Button { showARFullScreen = true } label: {
-                        Image(systemName: "arrow.up.left.and.arrow.down.right")
-                            .font(.system(size: 14, weight: .semibold))
-                            .frame(width: 36, height: 36)
-                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                if cameraEverOpened {
+                    Group {
+                    #if targetEnvironment(simulator)
+                        ARUnavailableInlineView()
+                    #else
+                        ARViewContainer(currentStepID: engine.currentStep.id, lugCount: lugCount, sessionModel: arSession)
+                    #endif
                     }
-                    .buttonStyle(.plain)
-                    .padding(10)
-                    .accessibilityLabel("Open camera fullscreen")
+                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    .opacity(visualMode == .camera ? 1 : 0)
+                    .allowsHitTesting(visualMode == .camera)
                 }
             }
             .overlay(alignment: .topLeading) {
@@ -456,9 +436,6 @@ struct FlowScreen: View {
                         .background(Color.black.opacity(0.55), in: Capsule())
                         .padding(10)
                 }
-            }
-            .fullScreenCover(isPresented: $showARFullScreen) {
-                ARFullScreenView(currentStepID: engine.currentStep.id, lugCount: lugCount, sessionModel: arSession)
             }
         }
         .overlay(alignment: .bottom) {

@@ -15,6 +15,7 @@ struct ARViewContainer: UIViewRepresentable {
         config.planeDetection = [.horizontal, .vertical]
         config.environmentTexturing = .automatic
         config.isAutoFocusEnabled = true
+        arView.automaticallyConfigureSession = false
         arView.session.run(config)
 
         #if DEBUG
@@ -55,6 +56,13 @@ struct ARViewContainer: UIViewRepresentable {
 
         private var ringEntity: ModelEntity?
         private var lugEntities: [Int: ModelEntity] = [:]
+
+        #if DEBUG
+        private var planeAxisAnchors: [AnchorEntity] = []
+        private var planeAxisIDs: Set<UUID> = []
+        private let maxPlaneAxis: Int = 3
+        private var axesArmed: Bool = true
+        #endif
 
         // Cached meshes (avoid reallocation)
         private let ringMesh = MeshResource.generateCylinder(height: 0.006, radius: 0.22)
@@ -98,7 +106,6 @@ struct ARViewContainer: UIViewRepresentable {
             lastLocked = sessionModel.isLocked
             lastLoosenedKey = loosenedKey
 
-            restoreAnchorIfNeeded()
             renderReuse()
         }
 
@@ -133,7 +140,7 @@ struct ARViewContainer: UIViewRepresentable {
             // C) Place/reposition with “best hit” selection (prevents snapping)
             guard let hit = bestRaycastHit(in: arView, at: location) else {
                 Task { @MainActor in
-                    self.sessionModel.setStatus("No surface found. Move iPad slowly, then tap.")
+                    self.sessionModel.setStatus("No surface found. Move device slowly, then tap.")
                 }
                 return
             }
@@ -152,9 +159,11 @@ struct ARViewContainer: UIViewRepresentable {
             }
 
             let transform = hit.worldTransform
+            let shouldLock = self.lastStepID == "ft_loosen"
             Task { @MainActor in
                 self.sessionModel.setAnchor(transform)   // sets isLocked=false
                 self.sessionModel.resetLugs()
+                if shouldLock { self.sessionModel.lock() }
             }
 
             createOrUpdateAnchor(transform)
@@ -165,13 +174,6 @@ struct ARViewContainer: UIViewRepresentable {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                     self.sessionModel.setStatus(nil, phase: .none)
                 }
-            }
-        }
-
-        private func restoreAnchorIfNeeded() {
-            Task { @MainActor in
-                guard let t = self.sessionModel.wheelTransform else { return }
-                self.createOrUpdateAnchor(t)
             }
         }
 
@@ -195,6 +197,13 @@ struct ARViewContainer: UIViewRepresentable {
             ringEntity = nil
             lugEntities.removeAll()
 
+            #if DEBUG
+            for a in planeAxisAnchors { a.removeFromParent() }
+            planeAxisAnchors.removeAll()
+            planeAxisIDs.removeAll()
+            axesArmed = false
+            #endif
+
             Task { @MainActor in
                 self.sessionModel.resetAlignment()
                 self.sessionModel.setStatus("Resetting AR…", phase: .resetting)
@@ -215,6 +224,11 @@ struct ARViewContainer: UIViewRepresentable {
                 awaitingReadyAfterReset = false
 
                 Task { @MainActor in
+                    #if DEBUG
+                    axesArmed = true
+                    applyPlaneAxesFromCurrentFrame(session)
+                    #endif
+
                     self.sessionModel.setStatus("Ready", phase: .ready)
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                         self.sessionModel.setStatus(nil, phase: .none)
@@ -222,6 +236,73 @@ struct ARViewContainer: UIViewRepresentable {
                 }
             }
         }
+
+        #if DEBUG
+        func session(_ session: ARSession, didAdd anchors: [ARAnchor]) {
+            guard axesArmed else { return }
+            Task { @MainActor in
+                guard let arView else { return }
+                guard planeAxisAnchors.count < maxPlaneAxis else { return }
+
+                for case let plane as ARPlaneAnchor in anchors {
+                    guard planeAxisAnchors.count < maxPlaneAxis else { break }
+                    guard !planeAxisIDs.contains(plane.identifier) else { continue }
+
+                    planeAxisIDs.insert(plane.identifier)
+                    let a = AnchorEntity(anchor: plane)
+                    a.name = "rr_plane_axis_\(plane.identifier)"
+                    a.addChild(makeAxis())
+                    arView.scene.addAnchor(a)
+                    planeAxisAnchors.append(a)
+                }
+            }
+        }
+        #endif
+
+        #if DEBUG
+        private func applyPlaneAxesFromCurrentFrame(_ session: ARSession) {
+            guard let arView else { return }
+            guard planeAxisAnchors.count < maxPlaneAxis else { return }
+            guard let frame = session.currentFrame else { return }
+
+            for case let plane as ARPlaneAnchor in frame.anchors {
+                guard planeAxisAnchors.count < maxPlaneAxis else { break }
+                guard !planeAxisIDs.contains(plane.identifier) else { continue }
+
+                planeAxisIDs.insert(plane.identifier)
+                let a = AnchorEntity(anchor: plane)
+                a.name = "rr_plane_axis_\(plane.identifier)"
+                a.addChild(makeAxis())
+                arView.scene.addAnchor(a)
+                planeAxisAnchors.append(a)
+            }
+        }
+        #endif
+
+        #if DEBUG
+        private func makeAxis() -> Entity {
+            let root = Entity()
+            let length: Float = 0.20
+            let t: Float = 0.06 // thickness scale
+
+            let x = ModelEntity(mesh: .generateBox(size: length), materials: [SimpleMaterial(color: .systemRed, isMetallic: false)])
+            x.scale = [1, t, t]
+            x.position.x = length / 2
+
+            let y = ModelEntity(mesh: .generateBox(size: length), materials: [SimpleMaterial(color: .systemGreen, isMetallic: false)])
+            y.scale = [t, 1, t]
+            y.position.y = length / 2
+
+            let z = ModelEntity(mesh: .generateBox(size: length), materials: [SimpleMaterial(color: .systemBlue, isMetallic: false)])
+            z.scale = [t, t, 1]
+            z.position.z = length / 2
+
+            root.addChild(x)
+            root.addChild(y)
+            root.addChild(z)
+            return root
+        }
+        #endif
 
         private func distanceFromCamera(to worldTransform: simd_float4x4, in arView: ARView) -> Float {
             let cameraPos = arView.cameraTransform.translation
@@ -243,15 +324,6 @@ struct ARViewContainer: UIViewRepresentable {
                         let d = distanceFromCamera(to: first.worldTransform, in: arView)
                         if d < maxDist { return first }
                     }
-                }
-            }
-
-            // Fallback: estimated plane, but only if close (this is what causes weird jumps if unbounded)
-            if let q = arView.makeRaycastQuery(from: location, allowing: .estimatedPlane, alignment: .any) {
-                let results = arView.session.raycast(q)
-                if let first = results.first {
-                    let d = distanceFromCamera(to: first.worldTransform, in: arView)
-                    if d < 1.2 { return first }
                 }
             }
 
@@ -311,43 +383,12 @@ struct ARViewContainer: UIViewRepresentable {
             }
         }
 
-        private func addWheelDisk(to anchor: AnchorEntity) {
-            // This faces “out of” the detected surface because ARKit uses the surface normal as local +Y.
-            let color = UIColor.systemBlue.withAlphaComponent(0.35)
-            let disk = ModelEntity(
-                mesh: .generateCylinder(height: 0.006, radius: 0.22),
-                materials: [SimpleMaterial(color: color, isMetallic: false)]
-            )
-            disk.name = "rr_ring"
-            disk.position = [0, 0.012, 0] // 1.2 cm off surface to avoid z-fighting
-            anchor.addChild(disk)
-        }
-
         private func lugPositions(count: Int, radius: Float = 0.13) -> [SIMD3<Float>] {
             guard count > 0 else { return [] }
             return (0..<count).map { i in
                 let angle = Float(i) * (2 * .pi / Float(count))
                 // x/z lie in the surface plane; y is surface normal
                 return [radius * cos(angle), 0.016, radius * sin(angle)]
-            }
-        }
-
-        private func addLugMarkers(to anchor: AnchorEntity, count: Int) {
-            let positions = lugPositions(count: count)
-
-            for (i, p) in positions.enumerated() {
-                let isOn = sessionModel.loosenedLugs.contains(i)
-                let lug = ModelEntity(
-                    mesh: .generateSphere(radius: 0.014),
-                    materials: [SimpleMaterial(color: isOn ? .systemGreen : .systemOrange, isMetallic: false)]
-                )
-                lug.name = "rr_lug_\(i)"
-                lug.position = p
-
-                lug.components.set(InputTargetComponent())
-                lug.generateCollisionShapes(recursive: true)
-
-                anchor.addChild(lug)
             }
         }
 
@@ -376,4 +417,5 @@ struct ARViewContainer: UIViewRepresentable {
         }
     }
 }
+
 
