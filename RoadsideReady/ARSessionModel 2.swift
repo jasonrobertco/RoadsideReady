@@ -1,30 +1,17 @@
-// Deprecated: Replaced by ARSessionModel.swift
-// This file is intentionally left empty to avoid duplicate type declarations.
-
+#if false
 import Foundation
-
-// Legacy ARSessionModel removed. See ARSessionModel.swift for the current implementation.
-
-// ARSessionModel.swift
-
 import Combine
 import simd
 
 @MainActor
 final class ARSessionModel: ObservableObject {
-    enum StatusPhase { case none, resetting, ready }
-
     @Published var wheelTransform: simd_float4x4? = nil
     @Published var isAligned: Bool = false
     @Published var isLocked: Bool = false
 
+    // Lug tracking (for ft_loosen)
     @Published var expectedLugCount: Int = 5
     @Published var loosenedLugs: Set<Int> = []
-
-    // Redo button trigger (ARViewContainer watches this)
-    @Published var resetRequest: Int = 0
-    @Published var statusText: String? = nil
-    @Published var statusPhase: StatusPhase = .none
 
     var hasAnchor: Bool { wheelTransform != nil }
 
@@ -37,11 +24,8 @@ final class ARSessionModel: ObservableObject {
     func lock()   { if hasAnchor { isLocked = true } }
     func unlock() { isLocked = false }
 
-    // CRITICAL: idempotent to avoid update loops
     func setExpectedLugCount(_ n: Int) {
-        let v = max(3, min(10, n))
-        guard v != expectedLugCount else { return }
-        expectedLugCount = v
+        expectedLugCount = max(3, min(10, n))
         loosenedLugs = loosenedLugs.filter { $0 < expectedLugCount }
     }
 
@@ -51,8 +35,6 @@ final class ARSessionModel: ObservableObject {
         else { loosenedLugs.insert(idx) }
     }
 
-    func resetLugs() { loosenedLugs.removeAll() }
-
     func resetAlignment() {
         wheelTransform = nil
         isAligned = false
@@ -60,13 +42,8 @@ final class ARSessionModel: ObservableObject {
         loosenedLugs.removeAll()
     }
 
-    func setStatus(_ text: String?, phase: StatusPhase = .none) {
-        statusText = text
-        statusPhase = phase
-    }
-
-    func requestReset() {
-        resetRequest &+= 1
-        setStatus("Resetting AR…", phase: .resetting)
+    func resetLugs() {
+        loosenedLugs.removeAll()
     }
 }
+#endif

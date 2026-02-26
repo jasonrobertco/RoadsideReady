@@ -43,8 +43,12 @@ struct RootView: View {
                     // MAIN CONTENT
                     VStack(spacing: 16) {
                         headerBar
-                        FlowScreen(engine: engine)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        FlowScreen(engine: engine) {
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.9)) {
+                                drawerState = .peek
+                            }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                     .padding()
 

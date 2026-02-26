@@ -27,11 +27,12 @@ struct FlowScreen: View {
             sectionsSheet
         }
         .sheet(isPresented: $showCompletion) {
-            CompletionSheet {
-                // restart without touching FlowEngine
-                while engine.canGoBack { engine.goBack() }
-                showCompletion = false
-            }
+            CompletionSheet(
+                onViewArticles: { onOpenArticles() },
+                onRestart: {
+                    while engine.canGoBack { engine.goBack() }
+                }
+            )
         }
         .onAppear {
             // Restore any saved choice for the initial step
@@ -45,7 +46,7 @@ struct FlowScreen: View {
                 speech.speak(speechText)
             }
         }
-        .onChange(of: engine.currentStep.id) { _, _ in
+        .onChange(of: engine.currentStep.id) {
             // Restore previously selected choice for this step, if any
             if let saved = choiceMemory[engine.currentStep.id] {
                 selectedChoiceID = saved
@@ -55,11 +56,6 @@ struct FlowScreen: View {
             // Speak updated instructions if enabled
             if voiceAssistEnabled {
                 speech.speak(speechText)
-            }
-            // Optionally follow up with voice control instructions after first Continue
-            if speakVoiceControlAfterContinue {
-                speech.speak(voiceControlInstructionsText)
-                speakVoiceControlAfterContinue = false
             }
             // Show completion when reaching the last step
             if engine.currentStep.id == engine.stepsInOrder.last?.id {
@@ -72,6 +68,7 @@ struct FlowScreen: View {
     @Environment(\.horizontalSizeClass) private var hSize
 
     @ObservedObject var engine: FlowEngine
+    let onOpenArticles: () -> Void
     @State private var showSections = false
     @State private var safetyChecks: [Bool] = Array(repeating: false, count: 4)
     @State private var selectedChoiceID: String? = nil
@@ -80,9 +77,10 @@ struct FlowScreen: View {
 
     @State private var cameraEverOpened = false
     @StateObject private var arSession = ARSessionModel()
+    @AppStorage("lugCount") private var lugCount: Int = 5
     @AppStorage("voiceAssistEnabled") private var voiceAssistEnabled: Bool = false
+    @AppStorage("voiceControlEnabled") private var voiceControlEnabled: Bool = false
     @StateObject private var speech = SpeechController()
-    @State private var speakVoiceControlAfterContinue = false
     private let voiceControlInstructionsText =
     "Voice help. With Voice Control, you can say: Tap Next, or Tap Back. With VoiceOver, swipe to navigate and double-tap to activate."
     
@@ -234,13 +232,39 @@ struct FlowScreen: View {
                 Text("Audio Instructions")
             }
             .font(.caption.weight(.semibold))
-            .foregroundStyle(.white)
+            .foregroundStyle(voiceAssistEnabled ? Color.white : Color.secondary)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(voiceAssistEnabled ? Color.accentColor : Color.gray.opacity(0.65), in: Capsule())
-            .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 1))
+            .background(voiceAssistEnabled ? Color(white: 0.15) : Color.gray.opacity(0.30), in: Capsule())
+        }
+        .rrShadow()
+        .buttonStyle(.plain)
+    }
+    
+    private var voiceControlPill: some View {
+        Button {
+            speech.stop()
+            voiceControlEnabled.toggle()
+            if voiceControlEnabled {
+                speech.speak(voiceControlInstructionsText)
+            } else {
+                speech.speak("Voice control off")
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: voiceControlEnabled ? "mic.fill" : "mic.slash.fill")
+                Text("Voice Control")
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(voiceControlEnabled ? Color.white : Color.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(voiceControlEnabled ? Color(white: 0.15) : Color.gray.opacity(0.30), in: Capsule())
         }
         .buttonStyle(.plain)
+        .rrShadow()
+        .accessibilityLabel("Voice control")
+        .accessibilityHint("Plays voice control instructions and toggles state")
     }
 
     private var bottomDock: some View {
@@ -315,9 +339,6 @@ struct FlowScreen: View {
     }
 
     private func handleNext() {
-        if isFirstScreen && engine.currentStep.id == "ft_safety" {
-            speakVoiceControlAfterContinue = true
-        }
         // If this step has choices, Next takes the selected one, or defaults to the first.
         if !engine.currentStep.choices.isEmpty {
             let choice = selectedChoice ?? engine.currentStep.choices.first!
@@ -328,6 +349,39 @@ struct FlowScreen: View {
         engine.goNext()
     }
 
+
+    private var arTopText: String? {
+        if visualMode != .camera { return nil }
+        if let s = arSession.statusText { return s }
+        if !arSession.hasAnchor { return "Tap a flat surface (floor or wall) near the tire to place the guide" }
+        if engine.currentStep.id == "ft_loosen" {
+            return "Tap each lug marker after loosening ¼–½ turn (do not remove)"
+        }
+        return nil
+    }
+
+    private var arTopPhase: ARSessionModel.StatusPhase {
+        arSession.statusPhase
+    }
+
+    private func arTopPill(text: String) -> some View {
+        HStack(spacing: 8) {
+            if arTopPhase == .resetting {
+                ProgressView().tint(.white)
+            } else if arTopPhase == .ready {
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.white)
+            }
+
+            Text(text)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.black.opacity(0.55), in: Capsule())
+        .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 1))
+    }
 
     private var visualPanel: some View {
         ZStack {
@@ -353,18 +407,16 @@ struct FlowScreen: View {
                 .padding(14)
                 .opacity(visualMode == .infographic ? 1 : 0)
 
-                if cameraEverOpened || visualMode == .camera {
-                    Group {
-    #if targetEnvironment(simulator)
-                        ARUnavailableInlineView()
-    #else
-                        ARViewContainer(currentStepID: engine.currentStep.id, sessionModel: arSession)
-    #endif
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                    .opacity(visualMode == .camera ? 1 : 0)
-                    .allowsHitTesting(visualMode == .camera)
+                Group {
+                #if targetEnvironment(simulator)
+                    ARUnavailableInlineView()
+                #else
+                    ARViewContainer(currentStepID: engine.currentStep.id, lugCount: lugCount, sessionModel: arSession)
+                #endif
                 }
+                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                .opacity(visualMode == .camera ? 1 : 0)
+                .allowsHitTesting(visualMode == .camera)
             }
             .overlay(alignment: .topTrailing) {
                 if visualMode == .camera && arAvailable {
@@ -380,8 +432,8 @@ struct FlowScreen: View {
                 }
             }
             .overlay(alignment: .topLeading) {
-                if visualMode == .camera, arSession.hasAnchor {
-                    Button { arSession.reset() } label: {
+                if visualMode == .camera {
+                    Button { arSession.requestReset() } label: {
                         Image(systemName: "arrow.counterclockwise")
                             .font(.system(size: 14, weight: .semibold))
                             .frame(width: 36, height: 36)
@@ -389,17 +441,37 @@ struct FlowScreen: View {
                     }
                     .buttonStyle(.plain)
                     .padding(10)
-                    .accessibilityLabel("Reset alignment")
+                    .accessibilityLabel("Redo")
+                }
+            }
+            .overlay(alignment: .topLeading) {
+                if visualMode == .camera, engine.currentStep.id == "ft_loosen" {
+                    let done = arSession.loosenedLugs.count
+                    let total = max(1, lugCount)
+                    Text("Loosened \(done)/\(total) • Tap each marker after ¼–½ turn (do not remove)")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(Color.black.opacity(0.55), in: Capsule())
+                        .padding(10)
                 }
             }
             .fullScreenCover(isPresented: $showARFullScreen) {
-                ARFullScreenView(currentStepID: engine.currentStep.id, sessionModel: arSession)
+                ARFullScreenView(currentStepID: engine.currentStep.id, lugCount: lugCount, sessionModel: arSession)
             }
         }
         .overlay(alignment: .bottom) {
             visualModeToggle
                 .padding(12)
                 .offset(y: -20)
+        }
+        .overlay(alignment: .top) {
+            if let t = arTopText {
+                arTopPill(text: t)
+                    .padding(.top, 12)
+                    .frame(maxWidth: .infinity)
+            }
         }
         .rrShadow()
     }
@@ -413,7 +485,6 @@ struct FlowScreen: View {
         .padding(4)
         .background(.ultraThinMaterial, in: Capsule())
         .overlay(Capsule().stroke(Color.black.opacity(0.04), lineWidth: 1))
-        .scaleEffect(1.5)
         .rrShadow()
     }
 
@@ -465,8 +536,12 @@ struct FlowScreen: View {
                 Text(engine.currentStep.title)
                     .font(.title3.weight(.semibold))
                 Spacer()
+                voiceControlPill
                 audioInstructionsPill
                 stepPill
+            }
+            if engine.mode == .flatTire, ["ft_tools", "ft_loosen"].contains(engine.currentStep.id) {
+                LugCountSelector(lugCount: $lugCount)
             }
 
             if engine.currentStep.id != "ft_safety", !engine.currentStep.safety.isEmpty {
@@ -784,12 +859,16 @@ private struct ARUnavailableInlineView: View {
 
 private struct CompletionSheet: View {
     @Environment(\.dismiss) private var dismiss
+    let onViewArticles: () -> Void
     let onRestart: () -> Void
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 14) {
+                Spacer(minLength: 6)
+
                 Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 44, weight: .semibold))
+                    .font(.system(size: 48, weight: .semibold))
                     .foregroundStyle(.green)
 
                 Text("Steps complete")
@@ -800,23 +879,59 @@ private struct CompletionSheet: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 24)
+                    .padding(.top, 2)
 
-                Button("Restart guide") {
-                    onRestart()
-                    dismiss()
+                VStack(spacing: 10) {
+                    Button {
+                        onViewArticles()
+                        dismiss()
+                    } label: {
+                        Label("View Articles", systemImage: "newspaper")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button {
+                        onRestart()
+                        dismiss()
+                    } label: {
+                        Text("Restart guide")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.borderedProminent)
+                .padding(.horizontal, 24)
+                .padding(.top, 8)
 
-                Spacer()
+                Spacer(minLength: 0)
             }
-            .padding(.top, 24)
-            .navigationTitle("Done")
+            .padding(.top, 14)
+            .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Close") { dismiss() }
+                    Button("Done") { dismiss() }
                 }
             }
+        }
+    }
+}
+
+private struct LugCountSelector: View {
+    @Binding var lugCount: Int
+    private let options = [4, 5, 6, 8]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Lug nuts")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Picker("", selection: $lugCount) {
+                ForEach(options, id: \.self) { n in
+                    Text("\(n)").tag(n)
+                }
+            }
+            .pickerStyle(.segmented)
         }
     }
 }
