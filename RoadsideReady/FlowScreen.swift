@@ -271,8 +271,8 @@ struct FlowScreen: View {
     private var arTopText: String? {
         if visualMode != .camera { return nil }
         if let s = arSession.statusText { return s }
-        if !arSession.hasAnchor { return "Tap a flat surface (floor or wall) near the tire to place the guide" }
-        if !arSession.lugSetupConfirmed { return "Tap Continue to set lug count (5–8)" }
+        if !arSession.hasAnchor { return "Tap floor or wall to place • Confirm position • Reset AR if needed" }
+        if !arSession.lugSetupConfirmed { return "Confirm position • Reset AR if needed • Tap Continue to set lug count (5–8)" }
         if engine.currentStep.id == "ft_loosen" {
             return "Tap each lug marker after loosening ¼–½ turn (do not remove)"
         }
@@ -298,8 +298,9 @@ struct FlowScreen: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(Color.black.opacity(0.55), in: Capsule())
+        .background(.ultraThinMaterial, in: Capsule())
         .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 1))
+        .rrShadow()
     }
 
     // MARK: - AR-only lug setup UI (does NOT affect flow Continue/Next)
@@ -416,14 +417,21 @@ struct FlowScreen: View {
             .overlay(alignment: .topLeading) {
                 if visualMode == .camera {
                     Button { arSession.requestReset() } label: {
-                        Image(systemName: "arrow.counterclockwise")
-                            .font(.system(size: 14, weight: .semibold))
-                            .frame(width: 36, height: 36)
-                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        HStack(spacing: 8) {
+                            Image(systemName: "arrow.counterclockwise")
+                            Text("Reset AR")
+                        }
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 1))
+                        .rrShadow()
                     }
                     .buttonStyle(.plain)
                     .padding(10)
-                    .accessibilityLabel("Redo")
+                    .accessibilityLabel("Reset AR")
                 }
             }
             .overlay(alignment: .topLeading) {
@@ -1035,4 +1043,5 @@ private struct LugSetupSheet: View {
         }
     }
 }
+
 
