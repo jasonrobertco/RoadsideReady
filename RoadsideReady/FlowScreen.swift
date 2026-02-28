@@ -71,7 +71,6 @@ struct FlowScreen: View {
         }
     }
     
-    enum VisualMode { case infographic, camera }
     @Environment(\.horizontalSizeClass) private var hSize
 
     @ObservedObject var engine: FlowEngine
@@ -80,7 +79,6 @@ struct FlowScreen: View {
     @State private var safetyChecks: [Bool] = Array(repeating: false, count: 4)
     @State private var selectedChoiceID: String? = nil
     @State private var choiceMemory: [String: String] = [:]
-    @State private var visualMode: VisualMode = .infographic
 
     @State private var cameraEverOpened = false
     @State private var showARLugSetup = false
@@ -118,6 +116,82 @@ struct FlowScreen: View {
         }
     }
 
+    private func heroSymbol(for stepID: String) -> String {
+        switch stepID {
+        case "ft_loosen":    return "wrench.and.screwdriver"
+        case "ft_jackpoint": return "location.north.circle"
+        case "ft_jackup":    return "arrow.up.to.line.circle"
+        case "ft_remove":    return "arrow.right.circle"
+        case "ft_mount":     return "arrow.left.circle"
+        case "ft_lower":     return "arrow.down.to.line.circle"
+        default:               return "info.circle"
+        }
+    }
+
+    private func heroTags(for stepID: String) -> [String] {
+        switch stepID {
+        case "ft_jackpoint", "ft_jackup":
+            return ["Pinch points", "Heavy load"]
+        default:
+            return []
+        }
+    }
+
+    private var toolsItems: [String] {
+        // Convert the step body into a clean list:
+        // - Removes "Find:" line
+        // - Extracts "- item" bullets
+        engine.currentStep.body
+            .split(separator: "\n")
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .filter { $0.lowercased() != "find:" }
+            .compactMap { line in
+                if line.hasPrefix("- ") { return String(line.dropFirst(2)) }
+                return nil
+            }
+    }
+
+    private var toolsRightPanelContent: some View {
+        VStack(alignment: .leading, spacing: 14) {
+
+            // Centered infographic inside the right panel
+            HStack {
+                Spacer()
+                Image(heroAssetName) // uses your existing mapping (hero_tire, etc.)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: 260)   // controls size in right panel
+                    .accessibilityHidden(true)
+                Spacer()
+            }
+            .padding(.top, 6)
+            .padding(.bottom, 6)
+
+            Text("Tools needed")
+                .font(.headline.weight(.semibold))
+
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(toolsItems, id: \.self) { item in
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        Image(systemName: "checkmark.circle")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(.secondary)
+
+                        Text(item)
+                            .font(.body)
+                            .foregroundStyle(.primary)
+
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+            .padding(.vertical, 6)
+
+            Spacer(minLength: 0)
+        }
+    }
+
     private var speechText: String {
         // Make bullets read naturally
         let cleanedBody = engine.currentStep.body
@@ -132,11 +206,6 @@ struct FlowScreen: View {
         }
 
         return "\(engine.currentStep.title). \(cleanedBody)"
-    }
-
-    private func setVisualMode(_ mode: VisualMode) {
-        if mode == .camera { cameraEverOpened = true }
-        visualMode = mode
     }
 
     private var safetyReady: Bool {
@@ -269,7 +338,7 @@ struct FlowScreen: View {
     }
 
     private var arTopText: String? {
-        if visualMode != .camera { return nil }
+        guard cameraEverOpened else { return nil }
         if let s = arSession.statusText { return s }
         if !arSession.hasAnchor { return "Tap floor or wall to place • Confirm position • Reset AR if needed" }
         if !arSession.lugSetupConfirmed { return "Confirm position • Reset AR if needed • Tap Continue to set lug count (5–8)" }
@@ -305,7 +374,7 @@ struct FlowScreen: View {
 
     // MARK: - AR-only lug setup UI (does NOT affect flow Continue/Next)
     private var shouldShowARLugContinue: Bool {
-        visualMode == .camera &&
+        cameraEverOpened &&
         arSession.hasAnchor &&
         !arSession.lugSetupConfirmed &&
         !showARLugSetup
@@ -357,7 +426,7 @@ struct FlowScreen: View {
     }
 
     private var showARLugEntry: Bool {
-        visualMode == .camera && arSession.hasAnchor && arSession.isLocked && !showARLugSetup
+        cameraEverOpened && arSession.hasAnchor && arSession.isLocked && !showARLugSetup
     }
 
     private var arLugEntryPill: some View {
@@ -372,97 +441,78 @@ struct FlowScreen: View {
         .buttonStyle(.plain)
     }
     
+    private var startARCard: some View {
+        Button {
+            cameraEverOpened = true
+        } label: {
+            VStack(spacing: 14) {
+                ZStack {
+                    Image(systemName: "viewfinder")
+                        .font(.system(size: 70, weight: .regular))
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(.white.opacity(0.85))
+
+                    Image(systemName: "camera.fill")
+                        .font(.system(size: 28, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.95))
+                }
+
+                Text("Start AR Camera")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(.white)
+
+                Text("Tap to open the camera and place the guide.")
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.75))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+            }
+            .padding(22)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .buttonStyle(.plain)
+    }
+
     private var visualPanel: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .fill(Color.black.opacity(0.92))
 
-            ZStack {
-                // Infographic layer (always available)
-                Group {
-                    if UIImage(named: heroAssetName) != nil {
-                        Image(heroAssetName).resizable()
-                    } else if UIImage(named: "hero_tire") != nil {
-                        Image("hero_tire").resizable()
-                    } else {
-                        Image(systemName: engine.mode == .flatTire ? "tirepressure" : "battery.0")
-                            .resizable()
-                            .foregroundStyle(.secondary)
-                            .padding(40)
-                    }
-                }
-                .scaledToFit()
-                .scaleEffect(0.6)
-                .padding(14)
-                .opacity(visualMode == .infographic ? 1 : 0)
-
+            Group {
                 if cameraEverOpened {
-                    Group {
                     #if targetEnvironment(simulator)
-                        ARUnavailableInlineView()
+                    ARUnavailableInlineView()
                     #else
-                        ARViewContainer(
-                            currentStepID: engine.currentStep.id,
-                            lugCount: lugCount,
-                            sessionModel: arSession,
-                            isActive: (visualMode == .camera)
-                        )
+                    ARViewContainer(
+                        currentStepID: engine.currentStep.id,
+                        lugCount: lugCount,
+                        sessionModel: arSession,
+                        isActive: true
+                    )
                     #endif
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                    .opacity(visualMode == .camera ? 1 : 0)
-                    .allowsHitTesting(visualMode == .camera)
+                } else {
+                    startARCard
                 }
             }
-            .overlay(alignment: .topLeading) {
-                if visualMode == .camera {
-                    Button { arSession.requestReset() } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: "arrow.counterclockwise")
-                            Text("Reset AR")
-                        }
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(.ultraThinMaterial, in: Capsule())
-                        .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 1))
-                        .rrShadow()
+            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        }
+        .overlay(alignment: .topLeading) {
+            if cameraEverOpened {
+                Button { arSession.requestReset() } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.counterclockwise")
+                        Text("Reset AR")
                     }
-                    .buttonStyle(.plain)
-                    .padding(10)
-                    .accessibilityLabel("Reset AR")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 1))
+                    .rrShadow()
                 }
-            }
-            .overlay(alignment: .topLeading) {
-                if visualMode == .camera, engine.currentStep.id == "ft_loosen" {
-                    let done = arSession.loosenedLugs.count
-                    let total = max(1, lugCount)
-                    Text("Loosened \(done)/\(total) • Tap each marker after ¼–½ turn (do not remove)")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                        .background(Color.black.opacity(0.55), in: Capsule())
-                        .padding(10)
-                }
-            }
-            .overlay(alignment: .bottom) {
-                ZStack(alignment: .bottom) {
-                    // always lowest
-                    visualModeToggle
-                        .padding(.bottom, 10)
-
-                    // always above toggle (so it never blocks it)
-                    if showARLugSetup {
-                        arLugSliderPill
-                            .padding(.bottom, 70)
-                    } else if showARLugEntry {
-                        arLugEntryPill
-                            .padding(.bottom, 70)
-                    }
-                }
-                .padding(12)
+                .buttonStyle(.plain)
+                .padding(10)
             }
         }
         .overlay(alignment: .top) {
@@ -472,31 +522,21 @@ struct FlowScreen: View {
                     .frame(maxWidth: .infinity)
             }
         }
-        .rrShadow()
-    }
-
-    private var visualModeToggle: some View {
-        HStack(spacing: 0) {
-            toggleButton(.infographic, system: "doc.text.image", label: "Infographic")
-            Divider().opacity(0.25).frame(height: 18)
-            toggleButton(.camera, system: "camera.viewfinder", label: "Camera")
+        .overlay(alignment: .bottom) {
+            if cameraEverOpened {
+                ZStack(alignment: .bottom) {
+                    if showARLugSetup {
+                        arLugSliderPill
+                            .padding(.bottom, 12)
+                    } else if showARLugEntry {
+                        arLugEntryPill
+                            .padding(.bottom, 12)
+                    }
+                }
+                .padding(12)
+            }
         }
-        .padding(4)
-        .background(.ultraThinMaterial, in: Capsule())
-        .overlay(Capsule().stroke(Color.black.opacity(0.04), lineWidth: 1))
         .rrShadow()
-    }
-
-    private func toggleButton(_ mode: VisualMode, system: String, label: String) -> some View {
-        Button { setVisualMode(mode) } label: {
-            Image(systemName: system)
-                .font(.system(size: 14, weight: .semibold))
-                .frame(width: 44, height: 32)
-                .foregroundStyle(mode == visualMode ? Color.accentColor : Color.secondary)
-                .background(mode == visualMode ? Color.accentColor.opacity(0.12) : Color.clear, in: Capsule())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(label)
     }
 
     private var stepCard: some View {
@@ -528,16 +568,83 @@ struct FlowScreen: View {
         .accessibilityLabel(speech.isSpeaking ? "Stop audio" : "Play audio")
     }
 
+    private struct InstructionHero: View {
+        let symbol: String
+        let title: String
+
+        var body: some View {
+            VStack(spacing: 10) {
+                Image(systemName: symbol)
+                    .font(.system(size: 40, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(.primary)
+
+                Text(title)
+                    .font(.title3.weight(.semibold))
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+            }
+            .padding(.top, 6)
+            .padding(.bottom, 4)
+        }
+    }
+
+    private struct TagChip: View {
+        let text: String
+        var body: some View {
+            Text(text)
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.primary.opacity(0.08), in: Capsule())
+        }
+    }
+
+    private func bullet(_ s: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text("•")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(s)
+                .font(.body)
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     private var stepCardContent: some View {
         VStack(alignment: .leading, spacing: 12) {
             // Unified header across all steps
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(engine.currentStep.title)
-                    .font(.title3.weight(.semibold))
+            HStack(spacing: 8) {
                 Spacer()
                 voiceControlPill
                 audioInstructionsPill
                 stepPill
+            }
+
+            InstructionHero(
+                symbol: heroSymbol(for: engine.currentStep.id),
+                title: engine.currentStep.title
+            )
+
+            let tags = heroTags(for: engine.currentStep.id)
+            if !tags.isEmpty {
+                HStack(spacing: 8) {
+                    ForEach(tags, id: \.self) { TagChip(text: $0) }
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.bottom, 4)
+            }
+
+            // centered infographic image (moved from left panel)
+            if UIImage(named: heroAssetName) != nil {
+                Image(heroAssetName)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxHeight: 200)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.black.opacity(0.06), lineWidth: 1))
+                    .padding(.top, 2)
             }
 
             if engine.currentStep.id != "ft_safety", !engine.currentStep.safety.isEmpty {
@@ -561,6 +668,7 @@ struct FlowScreen: View {
                     Text("Tap each item to confirm.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                        .padding(.bottom, 8)
 
                     VStack(spacing: 0) {
                         ChecklistRow(title: "Hazard lights on", subtitle: "Stay visible", isChecked: $safetyChecks[0])
@@ -582,14 +690,22 @@ struct FlowScreen: View {
                 }
                 Spacer(minLength: 0)
             } else {
-                ScrollView {
-                    Text(engine.currentStep.body)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
-                }
-                if !engine.currentStep.choices.isEmpty {
-                    Divider()
-                    choiceSelector
+                if engine.currentStep.id == "ft_tools" {
+                    toolsRightPanelContent
+                } else {
+                    if engine.currentStep.id == "ft_tools" {
+                        toolsRightPanelContent
+                    } else {
+                        ScrollView {
+                            Text(engine.currentStep.body)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                        }
+                        if !engine.currentStep.choices.isEmpty {
+                            Divider()
+                            choiceSelector
+                        }
+                    }
                 }
             }
         }
@@ -774,6 +890,7 @@ struct FlowScreen: View {
 
         engine.goNext()
     }
+    
 }
 
 private struct RRPrimaryPillButtonStyle: ButtonStyle {
@@ -820,15 +937,15 @@ struct SafetyChip: View {
     }
 }
 
+// In FlowScreen.swift
+
 private struct ChecklistRow: View {
     let title: String
     let subtitle: String
     @Binding var isChecked: Bool
 
     var body: some View {
-        Button {
-            isChecked.toggle()
-        } label: {
+        Button { isChecked.toggle() } label: {
             HStack(spacing: 12) {
                 Image(systemName: isChecked ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 22, weight: .semibold))
@@ -836,23 +953,23 @@ private struct ChecklistRow: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.body.weight(.semibold))
+                        .font(.body.weight(.medium))          // changed
                         .foregroundStyle(.primary)
                     Text(subtitle)
-                        .font(.footnote)
+                        .font(.caption)                       // changed
                         .foregroundStyle(.secondary)
                 }
 
                 Spacer()
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 12)
+            .padding(.vertical, 14) // slightly more breathing room
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(title), \(isChecked ? "checked" : "unchecked")")
     }
 }
+
 
 private struct SafetyAdvisoryCard: View {
     let text: String
