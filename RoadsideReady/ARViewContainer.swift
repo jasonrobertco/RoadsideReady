@@ -99,8 +99,13 @@ struct ARViewContainer: UIViewRepresentable {
         private var chockFlashTask: Task<Void, Never>?
         private var lugsAnimatedInStage: Set<Int> = [] 
 
-        // ── lug entities ──────────────────────────────────────────────────────
+        // Nuts (interactive)
         private var lugEntities: [Int: Entity] = [:]
+
+        // Studs/bolts (non-interactive). Two sets so the correct studs travel with
+        // the correct tire during swap.
+        private var boltOldEntities: [Int: ModelEntity] = [:]   // moves with "_old" tire parts
+        private var boltNewEntities: [Int: ModelEntity] = [:]   // moves with "_new" tire parts
 
         // ── animation / step state ────────────────────────────────────────────
         private enum Stage { case base, chockPlaced, loosen, jackPlaced, jackUp, removed, mount, lowered }
@@ -187,6 +192,11 @@ struct ARViewContainer: UIViewRepresentable {
 
         private lazy var lugStemMesh: MeshResource =
             MeshResource.generateCylinder(height: lugStemH, radius: lugStemR)
+
+        private let matBolt = SimpleMaterial(
+            color: UIColor(white: 0.80, alpha: 1.0),
+            isMetallic: true
+        )
 
         private let lugTickMesh = MeshResource.generateBox(size: [0.006, 0.003, 0.003])
 
@@ -406,6 +416,8 @@ struct ARViewContainer: UIViewRepresentable {
             jackRoot = nil; jackBase = nil; jackTop = nil; jackPad = nil
             jackArmLF = nil; jackArmRF = nil; jackArmLB = nil; jackArmRB = nil
             lugEntities.removeAll()
+            boltOldEntities.removeAll()
+            boltNewEntities.removeAll()
             stage = .base
             lastStepID = ""
             lastLugCount = 0
@@ -493,7 +505,7 @@ struct ARViewContainer: UIViewRepresentable {
                     let model = ModelEntity(mesh: (try? MeshResource.generate(from: [desc])) ?? .generateBox(size: 0.1), materials: [mat])
                     
             model.orientation = simd_quatf(angle: .pi / 2, axis: [0, 0, 1]) // 90° CCW
-            let leftNudge: Float = -0.55   // try 0.05, 0.10, 0.15
+            let leftNudge: Float = -0.6   // try 0.05, 0.10, 0.15
             let forwardBackNudge: Float = -0.07   // try ±0.02, ±0.05, ±0.10
 
             model.position = [-(treadOuterR + w * 0.5 + 0.03 + leftNudge), forwardBackNudge, -treadOuterR]
@@ -625,25 +637,37 @@ struct ARViewContainer: UIViewRepresentable {
         // MARK: Lug build  (called when lugCount confirmed or changes)
         // ─────────────────────────────────────────────────────────────────────
         private func rebuildLugs(count: Int) {
-            // Clear any tighten state when lug count changes
             sessionModel.tightenedLugs.removeAll()
             sessionModel.activeLugIndex = nil
-            
+
             guard let wg = wheelGroup else { return }
-            
-            // Hard-remove lugs that are no longer needed (prevents accumulation)
+
+            // Remove extras
             for k in lugEntities.keys where k >= count {
                 lugEntities[k]?.removeFromParent()
                 lugEntities[k] = nil
             }
+            for k in boltOldEntities.keys where k >= count {
+                boltOldEntities[k]?.removeFromParent()
+                boltOldEntities[k] = nil
+            }
+            for k in boltNewEntities.keys where k >= count {
+                boltNewEntities[k]?.removeFromParent()
+                boltNewEntities[k] = nil
+            }
 
-            // Disable all existing lugs first
-            for (_, e) in lugEntities      { e.isEnabled = false }
+            // Disable all first
+            for (_, e) in lugEntities { e.isEnabled = false }
+            for (_, b) in boltOldEntities { b.isEnabled = false }
+            for (_, b) in boltNewEntities { b.isEnabled = false }
 
             let positions = lugPositions(count: count)
 
+            // Small visible tip beyond nut face
+            let studTipProtrude: Float = 0.006
+
             for i in 0..<count {
-                // Lug bolt
+                // ── NUT (your existing nut entity; keep as-is) ─────────────────────
                 if lugEntities[i] == nil {
                     let lug = Entity()
                     lug.name = "rr_lug_\(i)"
@@ -657,15 +681,10 @@ struct ARViewContainer: UIViewRepresentable {
 
                     let tick = ModelEntity(mesh: lugTickMesh, materials: [matLugBlue])
                     tick.name = "rr_lug_tick"
-                    // place it near the edge of the hex so rotation is obvious
                     tick.position = [lugHeadR * 0.85, 0, 0]
                     head.addChild(tick)
 
-                    let stem = ModelEntity(mesh: lugStemMesh, materials: [matLugBlue])
-                    stem.name = "rr_lug_stem"
-                    stem.position = [0, -(lugHeadH * 0.5 + lugStemH * 0.5), 0]
-                    lug.addChild(stem)
-
+                    // IMPORTANT: do NOT attach a cylinder “stem” to the nut anymore.
                     lugEntities[i] = lug
                     wg.addChild(lug)
                 }
@@ -674,9 +693,43 @@ struct ARViewContainer: UIViewRepresentable {
                 lug.isEnabled = true
                 lug.transform = Transform(translation: positions[i])
                 setLugMat(lug, matLugBlue)
+
+                // Compute stud center so ONLY the tip shows past the nut face.
+                let nutCenterY = positions[i].y
+                let nutFrontY  = nutCenterY + (lugHeadH * 0.5)
+                let studTopY   = nutFrontY + studTipProtrude
+                let studCenterY = studTopY - (lugStemH * 0.5)
+
+                // ── OLD TIRE STUDS (enabled initially; name contains "_old") ───────
+                if boltOldEntities[i] == nil {
+                    let stud = ModelEntity(mesh: lugStemMesh, materials: [matBolt])
+                    stud.name = "rr_bolt_old_\(i)"     // so oldParts filter picks it up
+                    boltOldEntities[i] = stud
+                    wg.addChild(stud)
+                }
+                if let stud = boltOldEntities[i] {
+                    stud.isEnabled = true
+                    stud.transform = Transform(
+                        translation: SIMD3<Float>(positions[i].x, studCenterY, positions[i].z)
+                    )
+                }
+
+                // ── NEW/SPARE STUDS (disabled until mount; name contains "_new") ───
+                if boltNewEntities[i] == nil {
+                    let stud = ModelEntity(mesh: lugStemMesh, materials: [matBolt])
+                    stud.name = "rr_bolt_new_\(i)"     // so newParts filter picks it up
+                    stud.isEnabled = false
+                    boltNewEntities[i] = stud
+                    wg.addChild(stud)
+                }
+                if let stud = boltNewEntities[i] {
+                    // keep same position; it will get enabled by your ft_mount newParts loop
+                    stud.transform = Transform(
+                        translation: SIMD3<Float>(positions[i].x, studCenterY, positions[i].z)
+                    )
+                }
             }
 
-            // Apply current stage to newly built lugs
             snapLugsToStage(animated: false)
         }
 
@@ -1107,7 +1160,7 @@ struct ARViewContainer: UIViewRepresentable {
                 head.model?.materials = [mat]
                 (head.findEntity(named: "rr_lug_tick") as? ModelEntity)?.model?.materials = [mat]
             }
-            (lug.findEntity(named: "rr_lug_stem") as? ModelEntity)?.model?.materials = [mat]
+            // Removed the line that recolors the old stem as per instructions
         }
 
         private func spinHeadCCWHalfTurn(_ head: Entity, parent lug: Entity) async {
@@ -1211,6 +1264,8 @@ struct ARViewContainer: UIViewRepresentable {
             jackArmLF = nil; jackArmRF = nil; jackArmLB = nil; jackArmRB = nil
 
             lugEntities.removeAll()
+            boltOldEntities.removeAll()
+            boltNewEntities.removeAll()
 
             stage = .base
             lastStepID = ""
