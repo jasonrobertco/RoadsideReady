@@ -50,6 +50,9 @@ struct FlowScreen: View {
             if voiceAssistEnabled {
                 speech.speak(speechText)
             }
+            if engine.currentStep.id == "ft_tools" {
+                toolsChecks = Array(repeating: false, count: toolsItems.count)
+            }
         }
         .onChange(of: engine.currentStep.id) {
             if let saved = choiceMemory[engine.currentStep.id] {
@@ -61,6 +64,9 @@ struct FlowScreen: View {
                         if engine.currentStep.id == "ft_tools" {
                             toolsChecked.removeAll()
                         }
+            if engine.currentStep.id == "ft_tools" {
+                toolsChecks = Array(repeating: false, count: toolsItems.count)
+            }
             if voiceAssistEnabled {
                 speech.speak(speechText)
             }
@@ -77,6 +83,7 @@ struct FlowScreen: View {
     @State private var showSections = false
     @State private var safetyChecks: [Bool] = Array(repeating: false, count: 4)
         @State private var toolsChecked: Set<String> = []
+        @State private var toolsChecks: [Bool] = []
     @State private var selectedChoiceID: String? = nil
     @State private var choiceMemory: [String: String] = [:]
 
@@ -124,6 +131,34 @@ struct FlowScreen: View {
             return []
         }
     }
+    
+    private var displayTitle: String {
+        if engine.currentStep.id == "ft_safety" {
+            return "Flat Tire Fix"
+        }
+        if engine.currentStep.id == "ft_tools" {
+            return "Required Tools"
+        }
+        return engine.currentStep.title
+    }
+
+    private func stepSymbol(for mode: RescueMode, stepID: String) -> String {
+        guard mode == .flatTire else { return "bolt.car.fill" }
+        switch stepID {
+        case "ft_safety":      return "hero_tire"
+        case "ft_tools":       return "wrench.and.screwdriver"
+        case "ft_spare_check": return "circle.circle"
+        case "ft_chock":       return "stop.fill"
+        case "ft_loosen":      return "wrench"
+        case "ft_jackpoint":   return "location.north.circle"
+        case "ft_jackup":      return "arrow.up.to.line.circle"
+        case "ft_remove":      return "arrow.right.circle"
+        case "ft_mount":       return "arrow.left.circle"
+        case "ft_lower":       return "arrow.down.to.line.circle"
+        case "ft_aftercare":   return "checkmark.seal"
+        default:               return "info.circle"
+        }
+    }
 
     private var toolsItems: [String] {
         engine.currentStep.body
@@ -137,61 +172,53 @@ struct FlowScreen: View {
             }
     }
 
+    // CLEANER CHECKLIST: Removes body-level tire and uses emojis as bullets
+    
+    private func toolSymbol(for item: String) -> String {
+        let s = item.lowercased()
+        if s.contains("spare tire") || s.contains("donut") { return "circle.circle" }          // simple wheel
+        if s.contains("jack") { return "arrow.up.square" }                                     // clean + readable
+        if s.contains("lug wrench") || s.contains("wrench") { return "wrench" }
+        if s.contains("chock") || s.contains("block") { return "stop.fill" }
+        if s.contains("flashlight") { return "flashlight.on.fill" }
+        if s.contains("gloves") { return "hands.sparkles.fill" }                               // optional
+        return "checklist"
+    }
+    
     private var toolsRightPanelContent: some View {
-            HStack(alignment: .top, spacing: 24) {
-                // LEFT SIDE: Big Tire Icon
-                VStack {
-                    Spacer()
-                    Image("hero_tire")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 120, height: 120)
-                        .padding(20)
-                        .background(Circle().fill(Color.primary.opacity(0.03)))
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity)
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(spacing: 0) {
+                ForEach(toolsItems, id: \.self) { raw in
+                    let isOptional = raw.lowercased().contains("optional")
+                    let title = raw.replacingOccurrences(of: " (optional)", with: "")
 
-                // RIGHT SIDE: Checklist
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Tools needed")
-                        .font(.headline.weight(.bold))
-                    
-                    VStack(spacing: 0) {
-                        ForEach(toolsItems, id: \.self) { item in
-                            Button {
-                                if toolsChecked.contains(item) { toolsChecked.remove(item) }
-                                else { toolsChecked.insert(item) }
-                            } label: {
-                                HStack(spacing: 12) {
-                                    Image(systemName: toolsChecked.contains(item) ? "checkmark.circle.fill" : "circle")
-                                        .font(.system(size: 20, weight: .medium))
-                                        .foregroundStyle(toolsChecked.contains(item) ? Color.accentColor : .secondary)
-                                    
-                                    Text(item)
-                                        .font(.subheadline.weight(.medium))
-                                        .foregroundStyle(toolsChecked.contains(item) ? .primary : .secondary)
-                                    
-                                    Spacer()
-                                }
-                                .padding(.vertical, 12)
-                                .padding(.horizontal, 12)
-                                .contentShape(Rectangle())
+                    ChecklistRow(
+                        title: title,
+                        subtitle: isOptional ? "Optional" : "",
+                        isChecked: Binding(
+                            get: { toolsChecked.contains(raw) },
+                            set: { newValue in
+                                if newValue { toolsChecked.insert(raw) }
+                                else { toolsChecked.remove(raw) }
                             }
-                            .buttonStyle(.plain)
-                            
-                            if item != toolsItems.last {
-                                Divider().padding(.leading, 40)
-                            }
-                        }
-                    }
-                    .background(RoundedRectangle(cornerRadius: 16).fill(Color(uiColor: .tertiarySystemBackground)))
-                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.black.opacity(0.05), lineWidth: 1))
+                        )
+                    )
+
+                    if raw != toolsItems.last { Divider().opacity(0.5) }
                 }
-                .frame(maxWidth: .infinity)
             }
-            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color(uiColor: .tertiarySystemBackground))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(Color.black.opacity(0.04), lineWidth: 1)
+            )
+
+            Spacer(minLength: 0)
         }
+    }
 
     private var speechText: String {
         let cleanedBody = engine.currentStep.body
@@ -563,35 +590,32 @@ struct FlowScreen: View {
         .accessibilityLabel(speech.isSpeaking ? "Stop audio" : "Play audio")
     }
 
-    // UPDATED HERO: Icon size increased 150% (50 -> 75)
-    // UPDATED HERO: Dynamic step title instead of static "Flat Tire Fix"
-        private struct InstructionHero: View {
-            let mode: RescueMode
-            let stepTitle: String
+    // UPDATED HERO: Supports side-by-side icons for prep steps in the header
+    private struct InstructionHero: View {
+        let symbol: String
+        let title: String
 
-            var body: some View {
-                VStack(spacing: 6) {
-                    if mode == .flatTire {
-                        Image("hero_tire")
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: 75, height: 75)
-                    } else {
-                        Image(systemName: "bolt.car.fill")
-                            .font(.system(size: 50, weight: .regular))
-                            .symbolRenderingMode(.hierarchical)
-                            .foregroundStyle(Color.accentColor)
-                    }
+        var body: some View {
+            VStack(spacing: 10) {
 
-                    Text(stepTitle)
-                        .font(.title2.weight(.bold))
-                        .multilineTextAlignment(.center)
+                if UIImage(named: symbol) != nil {
+                    Image(symbol)                 // custom asset (hero_tire)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(height: 60)
+                } else {
+                    Image(systemName: symbol)     // SF Symbol
+                        .font(.system(size: 44, weight: .semibold))
+                        .symbolRenderingMode(.hierarchical)
                 }
-                .padding(.top, 4)
-                .padding(.bottom, 6)
-                .frame(maxWidth: .infinity)
+
+                Text(title)
+                    .font(.title2.weight(.semibold))
+                    .multilineTextAlignment(.center)
             }
+            .frame(maxWidth: .infinity)
         }
+    }
 
     private struct TagChip: View {
         let text: String
@@ -626,20 +650,10 @@ struct FlowScreen: View {
                 audioInstructionsPill
             }
 
-            InstructionHero(mode: engine.mode, stepTitle: engine.currentStep.title)
-
-            
-
-            // FIX: Only show the body image if it's different from the header hero_tire asset
-                        if UIImage(named: heroAssetName) != nil && heroAssetName != "hero_tire" && heroAssetName != "hero_safety" {
-                Image(heroAssetName)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxHeight: 200)
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.black.opacity(0.06), lineWidth: 1))
-                    .padding(.top, 2)
-            }
+            InstructionHero(
+                symbol: stepSymbol(for: engine.mode, stepID: engine.currentStep.id),
+                title: displayTitle
+            )
 
 
             Divider()
@@ -649,7 +663,7 @@ struct FlowScreen: View {
                     SafetyAdvisoryCard(text: "If you’re in danger, call local emergency services.")
                     VoiceAssistCard(action: { speech.toggle(speechText) })
 
-                    Text("Tap each item to confirm.")
+                    Text("Safety check. Tap each item to confirm.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .padding(.bottom, 8)
@@ -929,9 +943,11 @@ private struct ChecklistRow: View {
                     Text(title)
                         .font(.body.weight(.medium))
                         .foregroundStyle(.primary)
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    if !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Spacer()
@@ -1133,3 +1149,4 @@ private struct LugSetupSheet: View {
         }
     }
 }
+
