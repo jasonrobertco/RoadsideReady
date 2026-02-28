@@ -42,29 +42,28 @@ struct FlowScreen: View {
             }
         }
         .onAppear {
-            // Restore any saved choice for the initial step
             if let saved = choiceMemory[engine.currentStep.id] {
                 selectedChoiceID = saved
             } else {
                 selectedChoiceID = nil
             }
-            // Speak the initial step if audio instructions are enabled
             if voiceAssistEnabled {
                 speech.speak(speechText)
             }
         }
         .onChange(of: engine.currentStep.id) {
-            // Restore previously selected choice for this step, if any
             if let saved = choiceMemory[engine.currentStep.id] {
                 selectedChoiceID = saved
             } else {
                 selectedChoiceID = nil
             }
-            // Speak updated instructions if enabled
+            // Reset tools checklist every time we enter the tools step
+                        if engine.currentStep.id == "ft_tools" {
+                            toolsChecked.removeAll()
+                        }
             if voiceAssistEnabled {
                 speech.speak(speechText)
             }
-            // Show completion when reaching the last step
             if engine.currentStep.id == engine.stepsInOrder.last?.id {
                 showCompletion = true
             }
@@ -77,6 +76,7 @@ struct FlowScreen: View {
     let onOpenArticles: () -> Void
     @State private var showSections = false
     @State private var safetyChecks: [Bool] = Array(repeating: false, count: 4)
+        @State private var toolsChecked: Set<String> = []
     @State private var selectedChoiceID: String? = nil
     @State private var choiceMemory: [String: String] = [:]
 
@@ -116,18 +116,6 @@ struct FlowScreen: View {
         }
     }
 
-    private func heroSymbol(for stepID: String) -> String {
-        switch stepID {
-        case "ft_loosen":    return "wrench.and.screwdriver"
-        case "ft_jackpoint": return "location.north.circle"
-        case "ft_jackup":    return "arrow.up.to.line.circle"
-        case "ft_remove":    return "arrow.right.circle"
-        case "ft_mount":     return "arrow.left.circle"
-        case "ft_lower":     return "arrow.down.to.line.circle"
-        default:               return "info.circle"
-        }
-    }
-
     private func heroTags(for stepID: String) -> [String] {
         switch stepID {
         case "ft_jackpoint", "ft_jackup":
@@ -138,9 +126,6 @@ struct FlowScreen: View {
     }
 
     private var toolsItems: [String] {
-        // Convert the step body into a clean list:
-        // - Removes "Find:" line
-        // - Extracts "- item" bullets
         engine.currentStep.body
             .split(separator: "\n")
             .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -153,47 +138,62 @@ struct FlowScreen: View {
     }
 
     private var toolsRightPanelContent: some View {
-        VStack(alignment: .leading, spacing: 14) {
-
-            // Centered infographic inside the right panel
-            HStack {
-                Spacer()
-                Image(heroAssetName) // uses your existing mapping (hero_tire, etc.)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: 260)   // controls size in right panel
-                    .accessibilityHidden(true)
-                Spacer()
-            }
-            .padding(.top, 6)
-            .padding(.bottom, 6)
-
-            Text("Tools needed")
-                .font(.headline.weight(.semibold))
-
-            VStack(alignment: .leading, spacing: 10) {
-                ForEach(toolsItems, id: \.self) { item in
-                    HStack(alignment: .firstTextBaseline, spacing: 10) {
-                        Image(systemName: "checkmark.circle")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(.secondary)
-
-                        Text(item)
-                            .font(.body)
-                            .foregroundStyle(.primary)
-
-                        Spacer(minLength: 0)
-                    }
+            HStack(alignment: .top, spacing: 24) {
+                // LEFT SIDE: Big Tire Icon
+                VStack {
+                    Spacer()
+                    Image("hero_tire")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 120, height: 120)
+                        .padding(20)
+                        .background(Circle().fill(Color.primary.opacity(0.03)))
+                    Spacer()
                 }
-            }
-            .padding(.vertical, 6)
+                .frame(maxWidth: .infinity)
 
-            Spacer(minLength: 0)
+                // RIGHT SIDE: Checklist
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Tools needed")
+                        .font(.headline.weight(.bold))
+                    
+                    VStack(spacing: 0) {
+                        ForEach(toolsItems, id: \.self) { item in
+                            Button {
+                                if toolsChecked.contains(item) { toolsChecked.remove(item) }
+                                else { toolsChecked.insert(item) }
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: toolsChecked.contains(item) ? "checkmark.circle.fill" : "circle")
+                                        .font(.system(size: 20, weight: .medium))
+                                        .foregroundStyle(toolsChecked.contains(item) ? Color.accentColor : .secondary)
+                                    
+                                    Text(item)
+                                        .font(.subheadline.weight(.medium))
+                                        .foregroundStyle(toolsChecked.contains(item) ? .primary : .secondary)
+                                    
+                                    Spacer()
+                                }
+                                .padding(.vertical, 12)
+                                .padding(.horizontal, 12)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            
+                            if item != toolsItems.last {
+                                Divider().padding(.leading, 40)
+                            }
+                        }
+                    }
+                    .background(RoundedRectangle(cornerRadius: 16).fill(Color(uiColor: .tertiarySystemBackground)))
+                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.black.opacity(0.05), lineWidth: 1))
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .padding(.vertical, 10)
         }
-    }
 
     private var speechText: String {
-        // Make bullets read naturally
         let cleanedBody = engine.currentStep.body
             .replacingOccurrences(of: "\n- ", with: ". ")
             .replacingOccurrences(of: "\n", with: ". ")
@@ -226,8 +226,6 @@ struct FlowScreen: View {
     }
 
     private var canTapNext: Bool {
-        // Not gated by checklist/alignment.
-        // Only disable on true end-of-flow.
         if !engine.currentStep.choices.isEmpty { return true }
         return engine.canGoNext
     }
@@ -235,11 +233,9 @@ struct FlowScreen: View {
     private var isFirstScreen: Bool { !engine.canGoBack }
 
     private var firstContinueEnabled: Bool {
-        // Only gate the very first screen, and only if it’s the safety checklist step.
         if isFirstScreen && engine.currentStep.id == "ft_safety" {
             return safetyChecks.allSatisfy { $0 }
         }
-        // Otherwise, let Continue work.
         return engine.canGoNext || !engine.currentStep.choices.isEmpty
     }
 
@@ -282,10 +278,10 @@ struct FlowScreen: View {
     
     private var stepPill: some View {
         Text(engine.progressText)
-            .font(.caption.weight(.semibold))
+            .font(.caption.weight(.bold))
             .foregroundStyle(.white)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
             .background(Color.accentColor, in: Capsule())
             .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 1))
             .rrShadow()
@@ -372,7 +368,6 @@ struct FlowScreen: View {
         .rrShadow()
     }
 
-    // MARK: - AR-only lug setup UI (does NOT affect flow Continue/Next)
     private var shouldShowARLugContinue: Bool {
         cameraEverOpened &&
         arSession.hasAnchor &&
@@ -411,7 +406,7 @@ struct FlowScreen: View {
                 step: 1,
                 onEditingChanged: { editing in
                     if !editing {
-                        arSession.confirmLugSetup(lugCount)   // auto-confirm on release
+                        arSession.confirmLugSetup(lugCount)
                         showARLugSetup = false
                     }
                 }
@@ -568,26 +563,35 @@ struct FlowScreen: View {
         .accessibilityLabel(speech.isSpeaking ? "Stop audio" : "Play audio")
     }
 
-    private struct InstructionHero: View {
-        let symbol: String
-        let title: String
+    // UPDATED HERO: Icon size increased 150% (50 -> 75)
+    // UPDATED HERO: Dynamic step title instead of static "Flat Tire Fix"
+        private struct InstructionHero: View {
+            let mode: RescueMode
+            let stepTitle: String
 
-        var body: some View {
-            VStack(spacing: 10) {
-                Image(systemName: symbol)
-                    .font(.system(size: 40, weight: .semibold))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(.primary)
+            var body: some View {
+                VStack(spacing: 6) {
+                    if mode == .flatTire {
+                        Image("hero_tire")
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 75, height: 75)
+                    } else {
+                        Image(systemName: "bolt.car.fill")
+                            .font(.system(size: 50, weight: .regular))
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(Color.accentColor)
+                    }
 
-                Text(title)
-                    .font(.title3.weight(.semibold))
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: .infinity)
+                    Text(stepTitle)
+                        .font(.title2.weight(.bold))
+                        .multilineTextAlignment(.center)
+                }
+                .padding(.top, 4)
+                .padding(.bottom, 6)
+                .frame(maxWidth: .infinity)
             }
-            .padding(.top, 6)
-            .padding(.bottom, 4)
         }
-    }
 
     private struct TagChip: View {
         let text: String
@@ -614,30 +618,20 @@ struct FlowScreen: View {
 
     private var stepCardContent: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // Unified header across all steps
+            // Header: Progress pill on left, audio/voice on right
             HStack(spacing: 8) {
+                stepPill
                 Spacer()
                 voiceControlPill
                 audioInstructionsPill
-                stepPill
             }
 
-            InstructionHero(
-                symbol: heroSymbol(for: engine.currentStep.id),
-                title: engine.currentStep.title
-            )
+            InstructionHero(mode: engine.mode, stepTitle: engine.currentStep.title)
 
-            let tags = heroTags(for: engine.currentStep.id)
-            if !tags.isEmpty {
-                HStack(spacing: 8) {
-                    ForEach(tags, id: \.self) { TagChip(text: $0) }
-                }
-                .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.bottom, 4)
-            }
+            
 
-            // centered infographic image (moved from left panel)
-            if UIImage(named: heroAssetName) != nil {
+            // FIX: Only show the body image if it's different from the header hero_tire asset
+                        if UIImage(named: heroAssetName) != nil && heroAssetName != "hero_tire" && heroAssetName != "hero_safety" {
                 Image(heroAssetName)
                     .resizable()
                     .scaledToFit()
@@ -647,19 +641,9 @@ struct FlowScreen: View {
                     .padding(.top, 2)
             }
 
-            if engine.currentStep.id != "ft_safety", !engine.currentStep.safety.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(engine.currentStep.safety) { flag in
-                            SafetyChip(text: flag.rawValue)
-                        }
-                    }
-                }
-            }
 
             Divider()
 
-            // Body content: safety checklist or regular body
             if engine.currentStep.id == "ft_safety" {
                 VStack(alignment: .leading, spacing: 12) {
                     SafetyAdvisoryCard(text: "If you’re in danger, call local emergency services.")
@@ -693,18 +677,14 @@ struct FlowScreen: View {
                 if engine.currentStep.id == "ft_tools" {
                     toolsRightPanelContent
                 } else {
-                    if engine.currentStep.id == "ft_tools" {
-                        toolsRightPanelContent
-                    } else {
-                        ScrollView {
-                            Text(engine.currentStep.body)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .textSelection(.enabled)
-                        }
-                        if !engine.currentStep.choices.isEmpty {
-                            Divider()
-                            choiceSelector
-                        }
+                    ScrollView {
+                        Text(engine.currentStep.body)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    }
+                    if !engine.currentStep.choices.isEmpty {
+                        Divider()
+                        choiceSelector
                     }
                 }
             }
@@ -741,7 +721,6 @@ struct FlowScreen: View {
         }
     }
 
-
     private struct SafetyHeroIcon: View {
         var body: some View {
             ZStack {
@@ -765,7 +744,6 @@ struct FlowScreen: View {
         GeometryReader { geo in
             Group {
                 if hSize == .regular {
-                    // iPad / landscape (and iPad portrait): 50/50 side-by-side
                     let spacing: CGFloat = 12
                     let leftW = (geo.size.width - spacing) / 2
 
@@ -783,10 +761,9 @@ struct FlowScreen: View {
                     .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
 
                 } else {
-                    // iPhone / compact: orientation-aware split
                     let spacing: CGFloat = 12
                     let isLandscape = geo.size.width > geo.size.height
-                    let ratio: CGFloat = isLandscape ? 0.55 : 0.35   // tweak portrait 0.30–0.38 if needed
+                    let ratio: CGFloat = isLandscape ? 0.55 : 0.35
 
                     let available = geo.size.height - spacing
                     let topH = max(180, min(available * ratio, 360))
@@ -881,7 +858,6 @@ struct FlowScreen: View {
     }
 
     private func handleNext() {
-        // If this step has choices, Next takes the selected one, or defaults to the first.
         if !engine.currentStep.choices.isEmpty {
             let choice = selectedChoice ?? engine.currentStep.choices.first!
             engine.select(choice)
@@ -937,8 +913,6 @@ struct SafetyChip: View {
     }
 }
 
-// In FlowScreen.swift
-
 private struct ChecklistRow: View {
     let title: String
     let subtitle: String
@@ -953,23 +927,22 @@ private struct ChecklistRow: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.body.weight(.medium))          // changed
+                        .font(.body.weight(.medium))
                         .foregroundStyle(.primary)
                     Text(subtitle)
-                        .font(.caption)                       // changed
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
                 Spacer()
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 14) // slightly more breathing room
+            .padding(.vertical, 14)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
 }
-
 
 private struct SafetyAdvisoryCard: View {
     let text: String
@@ -1160,5 +1133,3 @@ private struct LugSetupSheet: View {
         }
     }
 }
-
-
