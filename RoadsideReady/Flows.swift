@@ -66,9 +66,14 @@ If unsure, stop and get help.
             id: "ft_chock",
             title: "Chock the wheels",
             body: """
-Place a wheel chock (or block) against a tire that will stay on the ground to prevent rolling.
+Prevent rolling before lifting.
 
-If your car has a wheel cover/hubcap, remove it (if needed) before loosening lug nuts.
+- Place a wheel chock/block tight against a tire that will stay on the ground.
+  • Front flat → chock a rear tire
+  • Rear flat → chock a front tire
+- If there’s any slope, chock the downhill side.
+
+If your car has a wheel cover/hubcap, remove it (only if needed) before loosening lug nuts.
 """,
             safety: [.traffic],
             nextStepID: "ft_loosen",
@@ -79,10 +84,17 @@ If your car has a wheel cover/hubcap, remove it (if needed) before loosening lug
             id: "ft_loosen",
             title: "Loosen lug nuts (before lifting)",
             body: """
-Use the lug wrench to loosen each lug nut 1/4–1/2 turn.
+Loosen lug nuts while the tire is still on the ground.
 
+Fit matters:
+- Use the correct wrench/socket size (metric vs SAE). It should fit snug with no wobble.
+- If using a socket, a 6-point socket reduces the chance of rounding.
+
+Leverage:
+- A longer handle/breaker bar gives more torque, but keep force controlled (don’t bounce).
+
+Loosen each lug nut 1/4–1/2 turn.
 Do NOT fully remove them yet.
-Loosening while the tire is on the ground prevents the wheel from spinning.
 """,
             safety: [.pinchPoints, .heavyLift],
             nextStepID: "ft_jackpoint",
@@ -95,9 +107,14 @@ Loosening while the tire is on the ground prevents the wheel from spinning.
             body: """
 Locate the correct jacking point (often marked near the pinch weld).
 
-If you’re unsure:
-- Check the vehicle manual.
+- If you’re unsure, check the vehicle manual.
 - Wrong placement can damage the car or cause it to slip.
+
+Ground check:
+- The jack base must be on firm, level ground.
+- If the surface is soft, place a flat board under the jack to spread load.
+
+Keep hands clear of pinch points while positioning.
 """,
             safety: [.pinchPoints, .stopIfUnsure],
             nextStepID: "ft_jackup",
@@ -108,10 +125,13 @@ If you’re unsure:
             id: "ft_jackup",
             title: "Position jack and lift",
             body: """
-Position the jack at the jack point.
-Lift until the flat tire is just off the ground.
+Position the jack at the jack point, then lift.
+
+Lift until the flat tire is just off the ground (about 1–2 inches).
+If the car shifts, the jack tilts, or anything feels unstable: lower immediately and reposition.
 
 Keep hands/feet clear of the underside.
+Never put any part of your body under a car supported only by a jack.
 """,
             safety: [.pinchPoints, .heavyLift],
             nextStepID: "ft_remove",
@@ -123,9 +143,13 @@ Keep hands/feet clear of the underside.
             title: "Remove the wheel",
             body: """
 1) Remove lug nuts completely.
-2) Pull the wheel straight off and place it flat on the ground.
+2) Pull the wheel straight off and place it flat on the ground (so it can’t roll).
 
-Keep lug nuts together (a pocket/container helps).
+Tip: Keep lug nuts together (a pocket/container helps).
+
+If the wheel is stuck:
+- Pull firmly with both hands.
+- If needed, kick the tire sidewall (not the rim) to break it free.
 """,
             safety: [.heavyLift, .pinchPoints],
             nextStepID: "ft_mount",
@@ -137,8 +161,12 @@ Keep lug nuts together (a pocket/container helps).
             title: "Mount the spare",
             body: """
 1) Align the spare with the wheel studs.
-2) Push it on fully.
-3) Hand-tighten lug nuts in a star pattern.
+2) Push it on fully so it sits flush against the hub.
+3) Hand-thread lug nuts first (prevents cross-threading).
+4) Snug lug nuts in a star pattern (not fully tight yet).
+
+If it won’t sit flush:
+- Remove the wheel and check for rust/debris on the hub face.
 """,
             safety: [.heavyLift],
             nextStepID: "ft_lower",
@@ -151,7 +179,10 @@ Keep lug nuts together (a pocket/container helps).
             body: """
 Lower until the tire touches the ground and won’t spin.
 
-Then tighten lug nuts firmly (still in a star pattern).
+Then tighten lug nuts firmly in a star pattern.
+Fully lower the car and tighten again (same star pattern).
+
+Tip: Final torque should match your vehicle spec (owner’s manual). Avoid jumping/bouncing on the wrench.
 """,
             safety: [.pinchPoints],
             nextStepID: "ft_aftercare",
@@ -163,9 +194,15 @@ Then tighten lug nuts firmly (still in a star pattern).
             title: "Aftercare",
             body: """
 - Fully lower and remove the jack.
-- Tighten lug nuts again in a star pattern.
+- Tighten lug nuts again in a star pattern (final check).
 - Check spare pressure when you can.
-- Donut spares often have speed/distance limits — drive carefully and get the tire serviced ASAP.
+
+Valve note (pressure basics):
+- The valve stem is where you attach the air hose.
+- The valve core inside the stem is the one-way seal that holds air in.
+  If the spare won’t hold pressure, the valve core or tire may need service.
+
+Donut spares often have speed/distance limits — drive carefully and get the tire serviced ASAP.
 """,
             safety: [.stopIfUnsure],
             nextStepID: nil,
@@ -236,7 +273,8 @@ Look for:
 - Loose or damaged cables
 - Cracked case, swelling, or leaks
 
-If damaged/leaking: do not jump-start — call for help.
+STOP and call for help if damaged/leaking.
+If you can’t confidently identify (+) and (−) terminals, stop and get help.
 """,
                 safety: [.chemicals, .stopIfUnsure],
                 nextStepID: "db_jumpchecklist",
@@ -249,11 +287,14 @@ If damaged/leaking: do not jump-start — call for help.
                 body:
 """
 You need:
-- Jumper cables in good condition
+- Jumper cables in good condition (or a jump pack)
 - A donor vehicle (or jump pack)
 - Both vehicles in Park, parking brakes set
 
-Never let the clamps touch each other once connected.
+Setup rules:
+- Vehicles should not touch.
+- Never let the clamps touch each other once connected.
+- Keep metal tools away from terminals.
 """,
                 safety: [.sparks, .stopIfUnsure],
                 nextStepID: "db_jumpsteps",
@@ -265,13 +306,14 @@ Never let the clamps touch each other once connected.
                 title: "Jump-start steps (general order)",
                 body:
 """
-General safe order (varies by vehicle):
+General safe order (varies by vehicle—manual wins):
 1) Red clamp to dead battery (+)
 2) Red clamp to donor battery (+)
 3) Black clamp to donor battery (-)
 4) Black clamp to a metal ground on the dead car (not the battery terminal)
 
-Start donor car, wait a minute, then try starting the dead car.
+Start donor car, wait ~60 seconds, then try starting the dead car.
+If it doesn’t start, wait 30 seconds between attempts (don’t crank continuously).
 """,
                 safety: [.sparks, .stopIfUnsure],
                 nextStepID: "db_afterstart",
@@ -283,6 +325,13 @@ Start donor car, wait a minute, then try starting the dead car.
                 title: "After it starts",
                 body:
 """
+Disconnect in reverse order:
+1) Black clamp from the dead car ground
+2) Black clamp from donor battery (-)
+3) Red clamp from donor battery (+)
+4) Red clamp from dead battery (+)
+
+Then:
 - Let the car run (or drive) to recharge.
 - If it dies again soon, the battery may be failing or the alternator may be an issue.
 - If warning lights appear, stop and seek service.
@@ -302,6 +351,7 @@ Call roadside assistance if:
 - You’re unsure about the correct terminals/ground point
 - Jump-start fails repeatedly
 - Vehicle is a hybrid/EV with special procedures
+- You’re in an unsafe location
 
 Safety > speed.
 """,
@@ -312,4 +362,3 @@ Safety > speed.
         ]
     )
 }
-

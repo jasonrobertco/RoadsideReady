@@ -250,8 +250,23 @@ struct ARViewContainer: UIViewRepresentable {
                 queue: .main
             ) { [weak self] _ in
                 self?.arView?.session.pause()
-            }
+                self?.sessionRunning = false            }
             observers.append(token)
+            
+            let token2 = NotificationCenter.default.addObserver(
+                    forName: UIApplication.didBecomeActiveNotification,
+                    object: nil,
+                    queue: .main
+                ) { [weak self] _ in
+                    guard let self,
+                          let arView = self.arView,
+                          let config = self.config
+                    else { return }
+
+                    arView.session.run(config)
+                    self.sessionRunning = true
+                }
+                observers.append(token2)
         }
 
         deinit {

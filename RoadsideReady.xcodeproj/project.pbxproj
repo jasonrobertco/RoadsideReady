@@ -266,7 +266,9 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = RoadsideReady/Info.plist;
-				INFOPLIST_KEY_NSCameraUsageDescription = "Roadside Ready uses the camera to align AR overlays for safe flat-tire guidance.\n";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Enable AR Instruction\n";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Enable Voice Instruction";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Enable Voice Instruction";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -311,7 +313,9 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = RoadsideReady/Info.plist;
-				INFOPLIST_KEY_NSCameraUsageDescription = "Roadside Ready uses the camera to align AR overlays for safe flat-tire guidance.\n";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Enable AR Instruction\n";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Enable Voice Instruction";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Enable Voice Instruction";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;

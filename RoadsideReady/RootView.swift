@@ -7,21 +7,84 @@
 
 import SwiftUI
 import UIKit
+import AVFoundation
+import Speech
 
 private extension View {
+    // RootView.swift
     func rrActionPill() -> some View {
         self
-            .font(.subheadline.weight(.semibold))
+            .font(.subheadline.weight(.bold))
             .foregroundStyle(.white)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
             .background(Color.accentColor, in: Capsule())
             .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 1))
+            .fixedSize(horizontal: true, vertical: false) // Prevent the pill from stretching weirdly
+    }
+}
+
+private extension View {
+    func rrShadow() -> some View {
+        self
+            .shadow(color: Color.black.opacity(0.35), radius: 18, x: 0, y: 12)
+            .shadow(color: Color.black.opacity(0.2), radius: 5,  x: 0, y: 3)
+    }
+
+    func rrGlassBar(cornerRadius: CGFloat = 22) -> some View {
+        self
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(
+                        LinearGradient(
+                            colors: [.white.opacity(0.5), .white.opacity(0.1)], // Glossier edge
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1.5
+                    )
+            )
+            .rrShadow()
+    }
+}
+
+private struct RRBackdrop: View {
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        ZStack {
+            // Deep twilight base
+            LinearGradient(
+                colors: [
+                    Color(red: 0.04, green: 0.11, blue: 0.29), // Rich Icon Indigo
+                    Color(red: 0.01, green: 0.02, blue: 0.05)  // Deep Midnight
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            // The "Glow" - Ambient light from the top left
+            Circle()
+                .fill(Color.blue.opacity(0.25))
+                .frame(width: 600, height: 600)
+                .blur(radius: 100)
+                .offset(x: -250, y: -300)
+
+            // Subtle secondary highlight
+            Circle()
+                .fill(Color.purple.opacity(0.12))
+                .frame(width: 500, height: 500)
+                .blur(radius: 120)
+                .offset(x: 300, y: 100)
+        }
+        .ignoresSafeArea()
     }
 }
 
 struct RootView: View {
     @StateObject private var engine = FlowEngine()
+    @AppStorage("didRequestVoicePerms") private var didRequestVoicePerms = false
 
     @Environment(\.horizontalSizeClass) private var hSize
     @Environment(\.verticalSizeClass) private var vSize
@@ -48,6 +111,8 @@ struct RootView: View {
                 let isVisible = drawerState != .hidden
 
                 ZStack(alignment: .leading) {
+                    RRBackdrop()
+
                     // MAIN CONTENT
                     VStack(spacing: 16) {
                         headerBar
@@ -58,7 +123,9 @@ struct RootView: View {
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
-                    .padding()
+                    .padding(.horizontal, 20)
+                    .padding(.top, 14)
+                    .padding(.bottom, 20)
 
                     // DIM BACKDROP (only when visible)
                     if isVisible {
@@ -83,7 +150,7 @@ struct RootView: View {
                         )
                         .frame(width: drawerWidth)
                         .frame(maxHeight: .infinity)
-                        .background(Color(uiColor: .systemBackground))
+                        .background(.regularMaterial)
                         .offset(x: offsetX)
                         .shadow(color: .black.opacity(0.18), radius: 24, x: 10, y: 0)
                         .gesture(
@@ -128,6 +195,30 @@ struct RootView: View {
                 }
             }
             .navigationBarHidden(true)
+            .background(
+                RadialGradient(
+                    colors: [
+                        Color.white.opacity(0.9),
+                        Color.blue.opacity(0.08)
+                    ],
+                    center: .top,
+                    startRadius: 50,
+                    endRadius: 1000
+                )
+                .ignoresSafeArea()
+            )
+        }
+        .task {
+            guard !didRequestVoicePerms else { return }
+            didRequestVoicePerms = true
+
+            _ = await withCheckedContinuation { (c: CheckedContinuation<Bool, Never>) in
+                AVAudioSession.sharedInstance().requestRecordPermission { ok in c.resume(returning: ok) }
+            }
+
+            _ = await withCheckedContinuation { (c: CheckedContinuation<SFSpeechRecognizerAuthorizationStatus, Never>) in
+                SFSpeechRecognizer.requestAuthorization { status in c.resume(returning: status) }
+            }
         }
     }
 
@@ -153,6 +244,7 @@ struct RootView: View {
 
                     Text("Roadside Ready")
                         .font(.system(size: 28, weight: .semibold))
+                        .foregroundStyle(.white)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                 }
@@ -161,6 +253,7 @@ struct RootView: View {
                 ZStack {
                     Text("Roadside Ready")
                         .font(.largeTitle.weight(.semibold))
+                        .foregroundStyle(.white)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
 

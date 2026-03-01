@@ -49,15 +49,21 @@ struct ArticlesSheetView: View {
                     .padding(.horizontal, 4)
                 }
 
-                List(filtered) { article in
-                    NavigationLink {
-                        ArticlePreviewView(article: article)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(article.title).font(.headline)
-                            Text(article.summary).font(.footnote).foregroundStyle(.secondary)
+                List {
+                    Section {
+                        ForEach(filtered) { article in
+                            NavigationLink {
+                                ArticlePreviewView(article: article)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(article.title).font(.headline)
+                                    Text(article.summary).font(.footnote).foregroundStyle(.secondary)
+                                }
+                                .padding(.vertical, 6)
+                            }
                         }
-                        .padding(.vertical, 6)
+                    } footer: {
+                        disclaimerFooter
                     }
                 }
                 .listStyle(.insetGrouped)
@@ -69,7 +75,7 @@ struct ArticlesSheetView: View {
                 ToolbarItem(placement: .principal) {
                     HStack(spacing: 8) {
                         Image(systemName: "book.closed")
-                        Text("Manual")
+                        Text("Articles")
                     }
                     .font(.headline)
                     .foregroundStyle(.primary)
@@ -83,6 +89,14 @@ struct ArticlesSheetView: View {
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
+    }
+
+    private var disclaimerFooter: some View {
+        Text("Disclaimer: This information is general guidance, not professional advice. Always consult your owner’s manual for vehicle-specific procedures and safety warnings. If you feel unsafe at any point, stop and call for roadside assistance or emergency services.")
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .padding(.top, 6)
+            .textSelection(.enabled)
     }
 
     private func tagPill(_ text: String, isOn: Bool, action: @escaping () -> Void) -> some View {

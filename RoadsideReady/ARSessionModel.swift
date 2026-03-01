@@ -4,9 +4,13 @@ import Foundation
 import Combine
 import simd
 
-@MainActor
 final class ARSessionModel: ObservableObject {
     enum StatusPhase { case none, resetting, ready }
+
+    private func onMain(_ block: @escaping () -> Void) {
+        if Thread.isMainThread { block() }
+        else { DispatchQueue.main.async(execute: block) }
+    }
 
     // Anchor placement
     @Published var wheelTransform: simd_float4x4? = nil
@@ -31,68 +35,84 @@ final class ARSessionModel: ObservableObject {
     @Published var statusText: String? = nil
     @Published var statusPhase: StatusPhase = .none
 
+    // Voice Control bridging (toggled from SwiftUI)
+    @Published var isVoiceControlEnabled: Bool = false
+
     var hasAnchor: Bool { wheelTransform != nil }
 
     // MARK: - Placement / locking
 
     func setAnchor(_ transform: simd_float4x4) {
-        wheelTransform = transform
-        isAligned = true
-        isLocked = false
+        onMain {
+            self.wheelTransform = transform
+            self.isAligned = true
+            self.isLocked = false
 
-        // New placement => require setup again
-        lugSetupConfirmed = false
-        expectedLugCount = max(5, min(8, expectedLugCount))
+            self.lugSetupConfirmed = false
+            self.expectedLugCount = max(5, min(8, self.expectedLugCount))
 
-        loosenedLugs.removeAll()
-        tightenedLugs.removeAll()
-        activeLugIndex = nil
+            self.loosenedLugs.removeAll()
+            self.tightenedLugs.removeAll()
+            self.activeLugIndex = nil
+        }
     }
 
-    func lock()   { if hasAnchor { isLocked = true } }
-    func unlock() { isLocked = false }
+    func lock() {
+        onMain { if self.hasAnchor { self.isLocked = true } }
+    }
+    func unlock() {
+        onMain { self.isLocked = false }
+    }
 
     // MARK: - Lug setup
 
     // Keep this idempotent to avoid SwiftUI update loops
     func setExpectedLugCount(_ n: Int) {
-        let v = max(5, min(8, n))
-        guard v != expectedLugCount else { return }
-        expectedLugCount = v
-        loosenedLugs = loosenedLugs.filter { $0 < expectedLugCount }
-        tightenedLugs = tightenedLugs.filter { $0 < expectedLugCount }
-        if let a = activeLugIndex, a >= expectedLugCount { activeLugIndex = nil }
+        onMain {
+            let v = max(5, min(8, n))
+            guard v != self.expectedLugCount else { return }
+            self.expectedLugCount = v
+            self.loosenedLugs = self.loosenedLugs.filter { $0 < self.expectedLugCount }
+            self.tightenedLugs = self.tightenedLugs.filter { $0 < self.expectedLugCount }
+            if let a = self.activeLugIndex, a >= self.expectedLugCount { self.activeLugIndex = nil }
+        }
     }
 
     func confirmLugSetup(_ n: Int) {
-        setExpectedLugCount(n)
-        lugSetupConfirmed = true
-
-        // Setup confirmation resets tighten progress (loosen progress is separate)
-        tightenedLugs.removeAll()
-        activeLugIndex = nil
+        onMain {
+            self.setExpectedLugCount(n)
+            self.lugSetupConfirmed = true
+            self.tightenedLugs.removeAll()
+            self.activeLugIndex = nil
+        }
     }
 
     // MARK: - Loosen
 
     func toggleLoosened(_ idx: Int) {
-        guard idx >= 0 && idx < expectedLugCount else { return }
-        if loosenedLugs.contains(idx) { loosenedLugs.remove(idx) }
-        else { loosenedLugs.insert(idx) }
+        onMain {
+            guard idx >= 0 && idx < self.expectedLugCount else { return }
+            if self.loosenedLugs.contains(idx) { self.loosenedLugs.remove(idx) }
+            else { self.loosenedLugs.insert(idx) }
+        }
     }
 
     func markLoosened(_ idx: Int) {
-        guard idx >= 0 && idx < expectedLugCount else { return }
-        loosenedLugs.insert(idx)
+        onMain {
+            guard idx >= 0 && idx < self.expectedLugCount else { return }
+            self.loosenedLugs.insert(idx)
+        }
     }
 
-    func resetLugs() { loosenedLugs.removeAll() }
+    func resetLugs() { onMain { self.loosenedLugs.removeAll() } }
 
     // MARK: - Tighten sequence
 
     func beginTightenSequence() {
-        tightenedLugs.removeAll()
-        activeLugIndex = tightenOrder().first
+        onMain {
+            self.tightenedLugs.removeAll()
+            self.activeLugIndex = self.tightenOrder().first
+        }
     }
 
     /// Star-pattern order (supports 5–8; also works for 7)
@@ -128,56 +148,63 @@ final class ARSessionModel: ObservableObject {
     }
 
     func handleTightenTap(_ idx: Int) {
-        guard lugSetupConfirmed else { return }
-        guard idx >= 0 && idx < expectedLugCount else { return }
+        onMain {
+            guard self.lugSetupConfirmed else { return }
+            guard idx >= 0 && idx < self.expectedLugCount else { return }
 
-        if let active = activeLugIndex, idx != active {
-            setStatus("Tap the highlighted lug next.")
-            return
-        }
+            if let active = self.activeLugIndex, idx != active {
+                self.setStatus("Tap the highlighted lug next.")
+                return
+            }
 
-        tightenedLugs.insert(idx)
+            self.tightenedLugs.insert(idx)
+            let next = self.tightenOrder().first(where: { !self.tightenedLugs.contains($0) })
+            self.activeLugIndex = next
 
-        let next = tightenOrder().first(where: { !tightenedLugs.contains($0) })
-        activeLugIndex = next
-
-        if next == nil {
-            setStatus("Sequence complete ✓", phase: .ready)
-            clearStatus(afterSeconds: 0.8)
+            if next == nil {
+                self.setStatus("Sequence complete ✓", phase: .ready)
+                self.clearStatus(afterSeconds: 0.8)
+            }
         }
     }
 
     // MARK: - Reset
 
     func resetAlignment() {
-        wheelTransform = nil
-        isAligned = false
-        isLocked = false
+        onMain {
+            self.wheelTransform = nil
+            self.isAligned = false
+            self.isLocked = false
 
-        lugSetupConfirmed = false
-        expectedLugCount = max(5, min(8, expectedLugCount))
+            self.lugSetupConfirmed = false
+            self.expectedLugCount = max(5, min(8, self.expectedLugCount))
 
-        loosenedLugs.removeAll()
-        tightenedLugs.removeAll()
-        activeLugIndex = nil
+            self.loosenedLugs.removeAll()
+            self.tightenedLugs.removeAll()
+            self.activeLugIndex = nil
+        }
     }
 
     // MARK: - Status
 
     func setStatus(_ text: String?, phase: StatusPhase = .none) {
-        statusText = text
-        statusPhase = phase
+        onMain {
+            self.statusText = text
+            self.statusPhase = phase
+        }
     }
 
     func requestReset() {
-        resetRequest &+= 1
-        setStatus("Resetting AR…", phase: .resetting)
+        onMain {
+            self.resetRequest &+= 1
+            self.setStatus("Resetting AR…", phase: .resetting)
+        }
     }
 
     private func clearStatus(afterSeconds seconds: Double) {
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
             self.setStatus(nil, phase: .none)
         }
     }
 }
+

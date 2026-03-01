@@ -8,12 +8,58 @@
 import SwiftUI
 import UIKit
 
+// Panel text colors used throughout the glass card UI
+private let rrPanelPrimary = Color.white.opacity(0.86)    // primary text on dark glass
+private let rrPanelSecondary = Color.white.opacity(0.66)  // secondary/caption text on dark glass
+
 private extension View {
+    // Standard drop shadow used on floating cards and panels
     func rrShadow() -> some View {
-        self.shadow(color: Color.black.opacity(0.12), radius: 6, x: 0, y: 2)
+        self.shadow(color: Color.black.opacity(0.35), radius: 16, x: 0, y: 6)
+    }
+    
+    // Lighter shadow used on pill-shaped badges (step counter, audio pill, etc.)
+    func rrPillShadow() -> some View {
+        self.shadow(color: Color.black.opacity(0.18), radius: 8, x: 0, y: 3)
+    }
+    
+    // White text with a drop shadow so it reads clearly over dark glass backgrounds
+    func rrStepTitleOnGlass() -> some View {
+        self
+            .foregroundStyle(.white)
+            .shadow(color: Color.black.opacity(0.35), radius: 6, x: 0, y: 3)
+    }
+    
+    // Shared frosted-glass card style: dark-tinted ultraThin material + subtle gradient border
+    func rrGlassCard(cornerRadius: CGFloat = 22) -> some View {
+        self
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(Color(red: 0.18, green: 0.22, blue: 0.32).opacity(0.72))
+                    .background(
+                        .ultraThinMaterial,
+                        in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(
+                        LinearGradient(
+                            colors: [.white.opacity(0.25), .white.opacity(0.06)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1.2
+                    )
+                    .allowsHitTesting(false)   // ✅ IMPORTANT
+            )
+            .rrShadow()
     }
 }
 
+/// Main guided-flow screen. Hosts the AR visual panel on the left and the step card
+/// on the right (iPad/landscape) or stacked vertically (iPhone/compact). Manages
+/// navigation between rescue steps, safety checklists, voice assist, and AR session.
 struct FlowScreen: View {
     var body: some View {
         VStack(spacing: 0) {
@@ -21,7 +67,7 @@ struct FlowScreen: View {
         }
         .safeAreaInset(edge: .bottom) {
             bottomDock
-                .background(Color(uiColor: .systemBackground))
+                .padding(.bottom, 10) // Lift it slightly off the bottom edge
         }
         .sheet(isPresented: $showSections) {
             sectionsSheet
@@ -42,6 +88,7 @@ struct FlowScreen: View {
             }
         }
         .onAppear {
+            // Restore any previously saved choice and kick off voice assist on first display
             if let saved = choiceMemory[engine.currentStep.id] {
                 selectedChoiceID = saved
             } else {
@@ -53,8 +100,12 @@ struct FlowScreen: View {
             if engine.currentStep.id == "ft_tools" {
                 toolsChecks = Array(repeating: false, count: toolsItems.count)
             }
+            if voiceControlEnabled {
+                startVoiceCommands()
+            }
         }
         .onChange(of: engine.currentStep.id) {
+            // Sync choice selection and voice assistant whenever the step changes
             if let saved = choiceMemory[engine.currentStep.id] {
                 selectedChoiceID = saved
             } else {
@@ -74,27 +125,34 @@ struct FlowScreen: View {
                 showCompletion = true
             }
         }
+        .onDisappear {
+            voiceCommands.stop()
+        }
     }
     
     @Environment(\.horizontalSizeClass) private var hSize
     
-    @ObservedObject var engine: FlowEngine
-    let onOpenArticles: () -> Void
-    @State private var showSections = false
-    @State private var safetyChecks: [Bool] = Array(repeating: false, count: 4)
-    @State private var toolsChecked: Set<String> = []
-    @State private var toolsChecks: [Bool] = []
-    @State private var toolChecks: [Bool] = Array(repeating: false, count: 5)
-    @State private var selectedChoiceID: String? = nil
-    @State private var choiceMemory: [String: String] = [:]
+    // MARK: - Dependencies & State
+    @ObservedObject var engine: FlowEngine   // drives step navigation and mode
+    let onOpenArticles: () -> Void           // callback to open the Articles tab
+    @State private var showSections = false  // toggles the step-list sheet
+    @State private var safetyChecks: [Bool] = Array(repeating: false, count: 4)  // 4 safety pre-checks (ft_safety step)
+    @State private var toolsChecked: Set<String> = []   // tracks checked tool names (unused path)
+    @State private var toolsChecks: [Bool] = []          // per-item check state for tools checklist
+    @State private var toolChecks: [Bool] = Array(repeating: false, count: 5)  // legacy 5-item tool checks
+    @State private var selectedChoiceID: String? = nil   // which branch choice is selected
+    @State private var choiceMemory: [String: String] = [:]  // persists choices per step ID
     
-    @State private var cameraEverOpened = false
-    @State private var showARLugSetup = false
+    @State private var cameraEverOpened = false      // true once user taps "Start AR Camera"
+    @State private var showARLugSetup = false         // controls the inline lug-count slider
     @StateObject private var arSession = ARSessionModel()
-    @AppStorage("lugCount") private var lugCount: Int = 5
-    @AppStorage("voiceAssistEnabled") private var voiceAssistEnabled: Bool = false
-    @AppStorage("voiceControlEnabled") private var voiceControlEnabled: Bool = false
+    @AppStorage("lugCount") private var lugCount: Int = 5           // persisted lug nut count
+    @AppStorage("voiceAssistEnabled") private var voiceAssistEnabled: Bool = false   // audio TTS toggle
+    @AppStorage("voiceControlEnabled") private var voiceControlEnabled: Bool = false // voice command toggle
     @StateObject private var speech = SpeechController()
+    @StateObject private var voiceCommands = VoiceCommandController()
+    @State private var lastVoiceNavAt: TimeInterval = 0   // timestamp of last voice-triggered navigation
+    private let voiceNavCooldown: TimeInterval = 0.9      // minimum seconds between voice nav commands
     private let voiceControlInstructionsText =
     "Voice help. With Voice Control, you can say: Tap Next, or Tap Back. With VoiceOver, swipe to navigate and double-tap to activate."
     
@@ -102,6 +160,7 @@ struct FlowScreen: View {
     @State private var showLugSetup = false
     @State private var pendingLugCount: Int = 5
     
+    // Maps each flat-tire step ID to the matching hero image asset name
     private let flatTireHeroMap: [String: String] = [
         "ft_safety": "hero_safety",
         "ft_tools": "hero_tire",
@@ -116,6 +175,7 @@ struct FlowScreen: View {
         "ft_aftercare": "hero_tire",
     ]
     
+    // Returns the correct hero image name for the current mode and step
     private var heroAssetName: String {
         if engine.mode == .flatTire {
             return flatTireHeroMap[engine.currentStep.id] ?? "hero_tire"
@@ -124,6 +184,7 @@ struct FlowScreen: View {
         }
     }
     
+    // Returns safety warning chips shown on steps with physical hazards
     private func heroTags(for stepID: String) -> [String] {
         switch stepID {
         case "ft_jackpoint", "ft_jackup":
@@ -133,6 +194,7 @@ struct FlowScreen: View {
         }
     }
     
+    // Overrides the engine's step title for steps that need friendlier display names
     private var displayTitle: String {
         if engine.currentStep.id == "ft_safety" {
             return "Flat Tire Fix"
@@ -143,6 +205,7 @@ struct FlowScreen: View {
         return engine.currentStep.title
     }
     
+    // Maps each flat-tire step to an SF Symbol or asset name used in the hero/sections list
     private func stepSymbol(for mode: RescueMode, stepID: String) -> String {
         guard mode == .flatTire else { return "bolt.car.fill" }
         switch stepID {
@@ -161,6 +224,7 @@ struct FlowScreen: View {
         }
     }
     
+    // Parses the step body text into a list of bullet-point tool names for the checklist
     private var toolsItems: [String] {
         engine.currentStep.body
             .split(separator: "\n")
@@ -173,6 +237,7 @@ struct FlowScreen: View {
             }
     }
     
+    // Renders a tappable checklist row for a required tool with an icon, title, and optional subtitle
     private func toolRow(symbol: String, title: String, subtitle: String? = nil, index: Int) -> some View {
         Button {
             toolChecks[index].toggle()
@@ -181,11 +246,11 @@ struct FlowScreen: View {
                 
                 Image(systemName: toolChecks[index] ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(toolChecks[index] ? Color.accentColor : .secondary)
+                    .foregroundStyle(toolChecks[index] ? Color.accentColor : Color.white.opacity(0.3))
                 
                 Image(systemName: symbol)
                     .font(.system(size: 16))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(rrPanelSecondary)
                 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
@@ -194,7 +259,7 @@ struct FlowScreen: View {
                     if let subtitle {
                         Text(subtitle)
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(rrPanelSecondary)
                     }
                 }
                 
@@ -207,6 +272,7 @@ struct FlowScreen: View {
         .buttonStyle(.plain)
     }
     
+    // The right-panel content shown during the ft_tools step: lists all 5 required tools
     private var toolsRightPanelContent: some View {
         VStack(alignment: .leading, spacing: 12) {
             
@@ -216,7 +282,7 @@ struct FlowScreen: View {
                 
                 Text("Verify your equipment before continuing.")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(rrPanelSecondary)
             }
             .padding(.bottom, 8)
             
@@ -238,19 +304,27 @@ struct FlowScreen: View {
             }
             .background(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color(uiColor: .tertiarySystemBackground))
+                    .fill(Color(red: 0.18, green: 0.22, blue: 0.32).opacity(0.72))
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 14)
-                    .stroke(Color.black.opacity(0.04), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(Color.white.opacity(0.18), lineWidth: 1)
             )
             
             Spacer()
         }
     }
     
+    // Builds a clean spoken version of the current step for TTS — strips arrows, bullets, etc.
     private var speechText: String {
         let cleanedBody = engine.currentStep.body
+            .replacingOccurrences(of: "→", with: " to ")
+            .replacingOccurrences(of: "•", with: "")
+            .replacingOccurrences(of: "—", with: ", ")
+            .replacingOccurrences(of: "–", with: " to ")
+            .replacingOccurrences(of: "(+)", with: " positive ")
+            .replacingOccurrences(of: "(-)", with: " negative ")
             .replacingOccurrences(of: "\n- ", with: ". ")
             .replacingOccurrences(of: "\n", with: ". ")
         
@@ -264,30 +338,38 @@ struct FlowScreen: View {
         return "\(engine.currentStep.title). \(cleanedBody)"
     }
     
+    // True once all 4 safety items are checked (or if we're past that step)
     private var safetyReady: Bool {
         engine.currentStep.id != "ft_safety" || safetyChecks.allSatisfy { $0 }
     }
     
+    // True once the AR guide is aligned (or if the current step doesn't require AR alignment)
     private var alignmentReady: Bool {
         engine.currentStep.id != "ft_align" || arSession.isAligned
     }
     
+    // Looks up the currently selected choice object from the engine's step choices
     private var selectedChoice: RescueChoice? {
         guard let id = selectedChoiceID else { return nil }
         return engine.currentStep.choices.first { $0.id == id }
     }
     
+    // True when the user has satisfied all requirements to move forward
     private var canAdvanceFromStep: Bool {
         engine.currentStep.choices.isEmpty ? engine.canGoNext : (selectedChoice != nil)
     }
     
+    // True when the Next button should be tappable (choice or linear step)
     private var canTapNext: Bool {
         if !engine.currentStep.choices.isEmpty { return true }
         return engine.canGoNext
     }
     
+    // True when this is the very first step (no back navigation possible)
     private var isFirstScreen: Bool { !engine.canGoBack }
     
+    // Whether the Continue button on the first screen should be enabled
+    // (requires all safety checks on the ft_safety step)
     private var firstContinueEnabled: Bool {
         if isFirstScreen && engine.currentStep.id == "ft_safety" {
             return safetyChecks.allSatisfy { $0 }
@@ -295,6 +377,7 @@ struct FlowScreen: View {
         return engine.canGoNext || !engine.currentStep.choices.isEmpty
     }
     
+    // Thin capsule divider used between the visual panel and step card (iPad side-by-side layout)
     private var panelDividerVertical: some View {
         Capsule()
             .fill(Color.black.opacity(0.08))
@@ -302,6 +385,7 @@ struct FlowScreen: View {
             .padding(.vertical, 28)
     }
     
+    // Thin capsule divider used between panels stacked vertically (iPhone layout)
     private var panelDividerHorizontal: some View {
         Capsule()
             .fill(Color.black.opacity(0.08))
@@ -309,6 +393,7 @@ struct FlowScreen: View {
             .padding(.horizontal, 28)
     }
     
+    // Sheet that lists all steps in the current rescue flow with a checkmark on the active step
     private var sectionsSheet: some View {
         NavigationStack {
             List {
@@ -332,6 +417,7 @@ struct FlowScreen: View {
         }
     }
     
+    // Accent-colored pill showing current step progress (e.g. "Step 3 of 8")
     private var stepPill: some View {
         Text(engine.progressText)
             .font(.caption.weight(.bold))
@@ -340,9 +426,10 @@ struct FlowScreen: View {
             .padding(.vertical, 8)
             .background(Color.accentColor, in: Capsule())
             .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 1))
-            .rrShadow()
+            .rrPillShadow()
     }
     
+    // Pill button to toggle TTS audio instructions on/off
     private var audioInstructionsPill: some View {
         Button {
             speech.stop()
@@ -354,22 +441,25 @@ struct FlowScreen: View {
                 Text("Audio Instructions")
             }
             .font(.caption.weight(.semibold))
-            .foregroundStyle(voiceAssistEnabled ? Color.white : Color.secondary)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(voiceAssistEnabled ? Color(white: 0.15) : Color.gray.opacity(0.30), in: Capsule())
+            .foregroundStyle(.white) // ✅ always white text
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(Color(white: 0.15), in: Capsule()) // ✅ dark gray
         }
-        .rrShadow()
         .buttonStyle(.plain)
+        .rrPillShadow()
     }
     
+    // Pill button to toggle voice command recognition ("Tap Next", "Tap Back")
     private var voiceControlPill: some View {
         Button {
             speech.stop()
             voiceControlEnabled.toggle()
             if voiceControlEnabled {
+                startVoiceCommands()
                 speech.speak(voiceControlInstructionsText)
             } else {
+                voiceCommands.stop()
                 speech.speak("Voice control off")
             }
         } label: {
@@ -378,17 +468,17 @@ struct FlowScreen: View {
                 Text("Voice Control")
             }
             .font(.caption.weight(.semibold))
-            .foregroundStyle(voiceControlEnabled ? Color.white : Color.secondary)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(voiceControlEnabled ? Color(white: 0.15) : Color.gray.opacity(0.30), in: Capsule())
+            .foregroundStyle(.white) // ✅ always white text
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(Color(white: 0.15), in: Capsule()) // ✅ dark gray
         }
         .buttonStyle(.plain)
-        .rrShadow()
-        .accessibilityLabel("Voice control")
-        .accessibilityHint("Plays voice control instructions and toggles state")
+        .rrPillShadow()
     }
     
+    // Returns the contextual instruction text shown in the floating pill at the top of the AR panel,
+    // guiding the user through placement, lug setup, and per-step AR hints
     private var arTopText: String? {
         guard cameraEverOpened else { return nil }
         if let s = arSession.statusText { return s }
@@ -400,10 +490,12 @@ struct FlowScreen: View {
         return nil
     }
     
+    // Current AR status phase (none / resetting / ready) used to show spinner or checkmark in the pill
     private var arTopPhase: ARSessionModel.StatusPhase {
         arSession.statusPhase
     }
     
+    // Renders the floating AR status pill with optional spinner (resetting) or checkmark (ready)
     private func arTopPill(text: String) -> some View {
         HStack(spacing: 8) {
             if arTopPhase == .resetting {
@@ -424,6 +516,7 @@ struct FlowScreen: View {
         .rrShadow()
     }
     
+    // True when the user has placed the AR anchor but hasn't confirmed lug count yet
     private var shouldShowARLugContinue: Bool {
         cameraEverOpened &&
         arSession.hasAnchor &&
@@ -431,6 +524,7 @@ struct FlowScreen: View {
         !showARLugSetup
     }
     
+    // "Continue" pill shown after AR placement to prompt the user to set their lug count
     private var arLugContinuePill: some View {
         Button { showARLugSetup = true } label: {
             Text("Continue")
@@ -443,6 +537,7 @@ struct FlowScreen: View {
         .buttonStyle(.plain)
     }
     
+    // Inline slider pill for choosing lug count (5–8) directly inside the AR panel
     private var arLugSliderPill: some View {
         HStack(spacing: 12) {
             Text("Enter lug nuts (5–8)")
@@ -476,10 +571,12 @@ struct FlowScreen: View {
         .rrShadow()
     }
     
+    // True when the lug-edit entry button should be shown (anchor placed, confirmed, slider hidden)
     private var showARLugEntry: Bool {
         cameraEverOpened && arSession.hasAnchor && arSession.isLocked && !showARLugSetup
     }
     
+    // Shows current lug count with an "Edit" affordance, or "Continue" if not yet confirmed
     private var arLugEntryPill: some View {
         Button { showARLugSetup = true } label: {
             Text(arSession.lugSetupConfirmed ? "Lugs: \(lugCount)  •  Edit" : "Continue")
@@ -492,6 +589,7 @@ struct FlowScreen: View {
         .buttonStyle(.plain)
     }
     
+    // Placeholder card shown before the camera is opened, prompting the user to start AR
     private var startARCard: some View {
         Button {
             cameraEverOpened = true
@@ -524,10 +622,13 @@ struct FlowScreen: View {
         .buttonStyle(.plain)
     }
     
+    // FlowScreen.swift
+    
     private var visualPanel: some View {
         ZStack {
+            // High-contrast deep dark glass backing
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(Color.black.opacity(0.92))
+                .fill(Color.black.opacity(0.85)) // Darker for better contrast
             
             Group {
                 if cameraEverOpened {
@@ -547,6 +648,8 @@ struct FlowScreen: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         }
+        // ✅ APPLY THE GLASS MODIFIER HERE FOR GLOSS & BORDERS
+        .rrGlassCard(cornerRadius: 22)
         .overlay(alignment: .topLeading) {
             if cameraEverOpened {
                 Button { arSession.requestReset() } label: {
@@ -587,17 +690,22 @@ struct FlowScreen: View {
                 .padding(12)
             }
         }
-        .rrShadow()
     }
     
+    // The glass card containing the step header, hero image, body content, and choice selectors
     private var stepCard: some View {
         stepCardContent
             .padding()
-            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(Color.black.opacity(0.04), lineWidth: 1))
-            .rrShadow()
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .rrGlassCard(cornerRadius: 22)
+            .overlay(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .stroke(Color.white.opacity(0.25), lineWidth: 1.2)
+                    .allowsHitTesting(false) // ✅ add this
+            )
+        
     }
-    
+    // Primary "Listen / Stop audio" button displayed inside the step card body
     private var listenPrimaryButton: some View {
         Button { speech.toggle(speechText) } label: {
             HStack(spacing: 10) {
@@ -609,10 +717,14 @@ struct FlowScreen: View {
             .foregroundStyle(.primary)
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
-            .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color(red: 0.18, green: 0.22, blue: 0.32).opacity(0.72))
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            )
             .overlay(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(Color.white.opacity(0.10), lineWidth: 1)
+                    .stroke(Color.white.opacity(0.18), lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -706,6 +818,7 @@ struct FlowScreen: View {
                 Text(title)
                     .font(.title2.weight(.bold))
                     .multilineTextAlignment(.center)
+                    .rrStepTitleOnGlass()
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 10)
@@ -727,14 +840,15 @@ struct FlowScreen: View {
         HStack(alignment: .top, spacing: 10) {
             Text("•")
                 .font(.body.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(rrPanelSecondary)
             Text(s)
                 .font(.body)
-                .foregroundStyle(.primary)
+                .foregroundStyle(rrPanelPrimary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
     
+    // Full content stack for the step card: progress pill, hero, divider, and step-specific body
     private var stepCardContent: some View {
         VStack(alignment: .leading, spacing: 12) {
             // Header: Progress pill on left, audio/voice on right
@@ -775,11 +889,12 @@ struct FlowScreen: View {
                     }
                     .background(
                         RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(Color(uiColor: .tertiarySystemBackground))
+                            .fill(Color(red: 0.18, green: 0.22, blue: 0.32).opacity(0.72))
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                     )
                     .overlay(
                         RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .stroke(Color.black.opacity(0.04), lineWidth: 1)
+                            .stroke(Color.white.opacity(0.18), lineWidth: 1)
                     )
                 }
                 Spacer(minLength: 0)
@@ -799,8 +914,11 @@ struct FlowScreen: View {
                 }
             }
         }
+        
+        .foregroundStyle(rrPanelPrimary)
     }
     
+    // Renders up to 2 branching choice buttons (primary style for selected, secondary for unselected)
     private var choiceSelector: some View {
         let twoChoices = Array(engine.currentStep.choices.prefix(2))
         
@@ -850,6 +968,7 @@ struct FlowScreen: View {
         }
     }
     
+    // Lays out the visual panel and step card side-by-side (iPad/regular) or stacked (iPhone/compact)
     private var contentArea: some View {
         GeometryReader { geo in
             Group {
@@ -896,14 +1015,20 @@ struct FlowScreen: View {
         }
     }
     
+    // Floating bottom dock: navigation buttons stacked above the step progress indicator
     private var bottomDock: some View {
-        VStack(spacing: 10) {
-            if engine.canGoBack {
-                bottomNavRow
-            } else {
-                bottomContinueRow
+        VStack(spacing: 24) {
+            // Navigation Buttons
+            Group {
+                if engine.canGoBack {
+                    bottomNavRow
+                } else {
+                    bottomContinueRow
+                }
             }
+            .frame(maxWidth: 320)
             
+            // The Floating Glossy Progress Indicator
             HStack {
                 Spacer(minLength: 0)
                 StepProgressIndicator(
@@ -911,27 +1036,38 @@ struct FlowScreen: View {
                     currentStepID: engine.currentStep.id,
                     mode: engine.mode
                 )
-                .background(alignment: .center) {
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(
                     Capsule()
-                        .fill(Color(uiColor: .secondarySystemBackground))
-                        .offset(y: 2)
-                }
+                        .fill(
+                            LinearGradient(
+                                colors: [Color(white: 0.15), Color(white: 0.08)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        .opacity(0.9)
+                )
                 .overlay(
                     Capsule()
-                        .stroke(Color.black.opacity(0.04), lineWidth: 1)
-                        .offset(y: 2)
+                        .stroke(
+                            LinearGradient(
+                                colors: [.white.opacity(0.3), .white.opacity(0.1)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ),
+                            lineWidth: 1
+                        )
                 )
                 .rrShadow()
                 Spacer(minLength: 0)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 10)
-        .padding(.bottom, 12)
         .frame(maxWidth: .infinity)
-        .background(Color(uiColor: .systemBackground))
+        .background(Color.clear) // ❌ Kills the white box ❌
     }
-    
+    // "Continue" button shown on the very first step (no Back available yet)
     private var bottomContinueRow: some View {
         HStack {
             Spacer(minLength: 0)
@@ -943,30 +1079,57 @@ struct FlowScreen: View {
                     .minimumScaleFactor(0.85)
             }
             .accessibilityHint("Start the guided steps")
+            .accessibilityLabel("Continue")
             .buttonStyle(RRPrimaryPillButtonStyle())
             .frame(width: 320, height: 48)
             .disabled(!firstContinueEnabled)
             Spacer(minLength: 0)
         }
+        
     }
     
+    // Back + Next button pair shown on all steps after the first
     private var bottomNavRow: some View {
         HStack(spacing: 12) {
             Button("Back") { engine.goBack() }
                 .accessibilityHint("Go to the previous step")
+                .accessibilityLabel("Back")
                 .buttonStyle(RRSecondaryPillButtonStyle())
                 .frame(width: 160, height: 48)
                 .disabled(!engine.canGoBack)
             
             Button("Next") { handleNext() }
                 .accessibilityHint("Go to the next step")
+                .accessibilityLabel("Next")
                 .buttonStyle(RRPrimaryPillButtonStyle())
                 .frame(width: 160, height: 48)
                 .disabled(!canTapNext)
         }
         .frame(maxWidth: .infinity, alignment: .center)
     }
+    // Starts the voice command listener and wires "next", "back", "repeat", and "stop" commands
+    // with a cooldown to prevent accidental rapid navigation
+    private func startVoiceCommands() {
+        voiceCommands.start { command in
+            let now = Date().timeIntervalSince1970
+            guard now - lastVoiceNavAt > voiceNavCooldown else { return }
+            switch command {
+            case .next:
+                if canTapNext { lastVoiceNavAt = now; handleNext() }
+            case .back:
+                if engine.canGoBack { lastVoiceNavAt = now; engine.goBack() }
+            case .repeatStep:
+                speech.stop()
+                speech.speak(speechText)
+            case .stop:
+                voiceCommands.stop()
+                voiceControlEnabled = false
+                speech.speak("Voice control off")
+            }
+        }
+    }
     
+    // Advances the engine: resolves the selected choice if present, otherwise goes to the next step
     private func handleNext() {
         if !engine.currentStep.choices.isEmpty {
             let choice = selectedChoice ?? engine.currentStep.choices.first!
@@ -979,6 +1142,7 @@ struct FlowScreen: View {
     
 }
 
+/// Filled accent-color capsule button — used for the primary "Next" / "Continue" action
 private struct RRPrimaryPillButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
     
@@ -990,11 +1154,16 @@ private struct RRPrimaryPillButtonStyle: ButtonStyle {
             .background(
                 Capsule().fill(isEnabled ? Color.accentColor : Color.gray.opacity(0.35))
             )
+            .overlay(
+                Capsule()
+                    .stroke(Color.white.opacity(0.25), lineWidth: 1.2) // ← white outline
+            )
             .rrShadow()
             .opacity(configuration.isPressed ? 0.85 : 1.0)
     }
 }
 
+/// Secondary (unfilled) capsule button — used for the "Back" action and unselected choices
 private struct RRSecondaryPillButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -1011,6 +1180,7 @@ private struct RRSecondaryPillButtonStyle: ButtonStyle {
     }
 }
 
+/// Small grey capsule chip used to display safety tags (e.g. "Pinch points") on hero images
 struct SafetyChip: View {
     let text: String
     
@@ -1023,6 +1193,7 @@ struct SafetyChip: View {
     }
 }
 
+/// Tappable row with a checkbox, title, and subtitle — used in the safety pre-check list
 private struct ChecklistRow: View {
     let title: String
     let subtitle: String
@@ -1033,7 +1204,7 @@ private struct ChecklistRow: View {
             HStack(spacing: 12) {
                 Image(systemName: isChecked ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(isChecked ? Color.accentColor : Color.secondary)
+                    .foregroundStyle(isChecked ? Color.accentColor : Color.white.opacity(0.3))
                 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
@@ -1042,7 +1213,7 @@ private struct ChecklistRow: View {
                     if !subtitle.isEmpty {
                         Text(subtitle)
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(rrPanelSecondary)
                     }
                 }
                 
@@ -1056,6 +1227,7 @@ private struct ChecklistRow: View {
     }
 }
 
+/// Tappable row with an icon, title, and checkbox — used in the required-tools checklist
 private struct ToolRow: View {
     let icon: String
     let title: String
@@ -1069,7 +1241,7 @@ private struct ToolRow: View {
                 
                 Image(systemName: isChecked ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(isChecked ? Color.accentColor : Color.secondary)
+                    .foregroundStyle(isChecked ? Color.accentColor : Color.white.opacity(0.3))
                 
                 Text(icon)
                 
@@ -1087,6 +1259,7 @@ private struct ToolRow: View {
     }
 }
 
+/// Red-icon advisory banner shown at the top of the safety step ("call emergency services")
 private struct SafetyAdvisoryCard: View {
     let text: String
     
@@ -1099,22 +1272,24 @@ private struct SafetyAdvisoryCard: View {
                     .font(.subheadline.weight(.semibold))
                 Text(text)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(rrPanelSecondary)
             }
             Spacer()
         }
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color(uiColor: .tertiarySystemBackground))
+                .fill(Color(red: 0.18, green: 0.22, blue: 0.32).opacity(0.72))
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.black.opacity(0.04), lineWidth: 1)
+                .stroke(Color.white.opacity(0.14), lineWidth: 1)
         )
     }
 }
 
+/// Tappable info card that explains voice assistant options and plays the current step when tapped
 private struct VoiceAssistCard: View {
     let action: () -> Void
     
@@ -1139,11 +1314,12 @@ private struct VoiceAssistCard: View {
             .padding(12)
             .background(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Color(uiColor: .tertiarySystemBackground))
+                    .fill(Color(red: 0.18, green: 0.22, blue: 0.32).opacity(0.72))
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(Color.black.opacity(0.04), lineWidth: 1)
+                    .stroke(Color.white.opacity(0.14), lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -1152,6 +1328,7 @@ private struct VoiceAssistCard: View {
     }
 }
 
+/// Fallback view shown in the AR panel when running in Simulator (no camera available)
 private struct ARUnavailableInlineView: View {
     var body: some View {
         ZStack {
@@ -1172,6 +1349,7 @@ private struct ARUnavailableInlineView: View {
     }
 }
 
+/// Sheet shown when the user reaches the last step — offers "View Articles" and "Restart guide"
 private struct CompletionSheet: View {
     @Environment(\.dismiss) private var dismiss
     let onViewArticles: () -> Void
@@ -1232,6 +1410,7 @@ private struct CompletionSheet: View {
     }
 }
 
+/// Sheet for selecting lug nut count (5–8) before AR begins — persists choice and confirms to AR session
 private struct LugSetupSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Binding var selected: Int
@@ -1276,4 +1455,3 @@ private struct LugSetupSheet: View {
         }
     }
 }
-
